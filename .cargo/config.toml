@@ -1,0 +1,11 @@
+include = ["esp-config.toml"]
+
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor --chip esp32c5 --port /dev/ttyUSB0 --partition-table partitions.csv"
+
+[build]
+rustflags = ["-C", "force-frame-pointers"]
+target = "riscv32imac-unknown-none-elf"
+
+[unstable]
+build-std = ["core"]

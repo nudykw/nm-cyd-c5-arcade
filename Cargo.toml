@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cyd-c5-common",
+    "launcher",
+    "games/ttt",
+    "games/g2048",
+    "games/jewels",
+    "games/zuma",
+    "games/birds",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace.dependencies]
+esp-hal = { version = "~1.2.2", features = ["esp32c5", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c5"] }
+esp-storage = { version = "0.10.0", features = ["esp32c5", "embedded-storage"] }
+esp-println = { version = "0.18.0", default-features = false, features = ["esp32c5", "uart", "critical-section"] }
+critical-section = "1.2.0"
+mipidsi = "0.10.0"
+embedded-graphics = "0.8.2"
+embedded-hal = "1.0.0"
+embedded-hal-bus = "0.3.0"
+embedded-storage = "0.3.2"
+embedded-sdmmc = "0.10.0"
+cyd-c5-common = { path = "crates/cyd-c5-common" }
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = "fat"
+opt-level = "s"
+overflow-checks = false
