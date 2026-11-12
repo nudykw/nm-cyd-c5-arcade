@@ -9,7 +9,7 @@
 | плата | **NM-CYD-C5** — `ESP32-C5HR8`, 16 MB flash, 8 MB PSRAM, 2.8" ST7789 320×240, XPT2046, microSD на спільній SPI2 |
 | що це | Cargo-workspace: `cyd-launcher` у `factory` + 5 ігор, що вантажаться з `SD:/GAMES/*.BIN` в `ota_0` |
 | код | ~10 700 рядків Rust (з них `game.rs` — 3 700 чистої логіки, `bin/main.rs` — малювання) |
-| **git** | **немає** (`ls -d .git` → ні). `.gitignore` лишився від шаблону; `git status` тут не працює |
+| **git** | репозиторій з 2026-11-12, гілка `main`; `target/`, `dist/` — у `.gitignore`; ідентичність локальна (`vova <vova@raspberrypi>`, глобальний `~/.gitconfig` не створювався) |
 | збірка | `bash tools/build-all.sh`; прошивка — `bash tools/flash-all.sh /dev/ttyUSB0` |
 | тулчейн | `rust-toolchain.toml` → `stable` + target `riscv32imac-unknown-none-elf`; Xtensa-обгортки (`xtensa-env`) **не потрібні** |
 
@@ -73,6 +73,9 @@ cargo build --release -p cyd-game-g2048   # один крейт
 cargo run --release -p cyd-launcher       # runner з .cargo/config.toml сам шиє (espflash + partitions.csv)
 ```
 
+Збірка не бруднить репозиторій: `dist/sd/GAMES/*.BIN` і `dist/*.bin` генеруються, але `dist/` і
+`target/` у `.gitignore`, тож після `build-all.sh` `git status --short` лишається порожнім.
+
 Перед прошивкою звірити `../CURRENT-BOARD.md` (що саме на `/dev/ttyUSB0`) і зайнятість порту
 (`fuser -v /dev/ttyUSB0`). `ttyACM0` (native USB-JTAG) на цій платі **не працює** — тільки CH340.
 
@@ -98,7 +101,8 @@ cargo run --release -p cyd-launcher       # runner з .cargo/config.toml сам 
 
 ## Чого не робити
 
-- не шукати `git`-історію — репозиторію немає; «зберегти зміни» = не видаляти файли.
+- історія починається **2026-11-12** (перший коміт — увесь код), давніших змін у ній немає; `git log`/`git diff` працюють нормально.
+- не комітити `target/` і `dist/` — вони в `.gitignore`; перевірка після збірки: `git status --short` має лишитися порожнім.
 - не комітити/видаляти `target/`, `dist/*.bin` (генеровані) — але `dist/sd/GAMES/*.BIN` перезаписуються
   `build-all.sh`, руками їх не правити.
 - не міняти `partitions.csv` без правки адрес: `0x310000` у `tools/flash-all.sh` і константи в `boot.rs`.
