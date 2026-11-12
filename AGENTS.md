@@ -9,7 +9,7 @@
 | плата | **NM-CYD-C5** — `ESP32-C5HR8`, 16 MB flash, 8 MB PSRAM, 2.8" ST7789 320×240, XPT2046, microSD на спільній SPI2 |
 | що це | Cargo-workspace: `cyd-launcher` у `factory` + 5 ігор, що вантажаться з `SD:/GAMES/*.BIN` в `ota_0` |
 | код | ~10 700 рядків Rust (з них `game.rs` — 3 700 чистої логіки, `bin/main.rs` — малювання) |
-| **git** | репозиторій з 2026-11-12, гілка `main`; `target/`, `dist/` — у `.gitignore`; ідентичність локальна (`vova <vova@raspberrypi>`, глобальний `~/.gitconfig` не створювався) |
+| **git** | репозиторій з 2026-11-12, гілка `main`; `target/`, `dist/` — у `.gitignore`; ідентичність — `nudyk <nudykw@gmail.com>` (у `~/.gitconfig` і локально) |
 | збірка | `bash tools/build-all.sh`; прошивка — `bash tools/flash-all.sh /dev/ttyUSB0` |
 | тулчейн | `rust-toolchain.toml` → `stable` + target `riscv32imac-unknown-none-elf`; Xtensa-обгортки (`xtensa-env`) **не потрібні** |
 
