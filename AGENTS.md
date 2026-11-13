@@ -62,7 +62,8 @@ cd nm-cyd-c5-arcade
 
 bash tools/build-all.sh                # 1) хост-тести рушіїв → 2) cargo build --release --workspace
                                        # 3) dist/sd/GAMES/*.BIN → 4) dist/sdseed.bin   (~1–3 хв)
-bash tools/flash-all.sh /dev/ttyUSB0   # той самий build-all + лаунчер у factory + пакет ігор у sdseed
+bash tools/flash-all.sh /dev/ttyUSB0            # build-all + лаунчер у factory + пакет ігор у sdseed
+bash tools/flash-all.sh /dev/ttyUSB0 --no-seed  # тільки лаунчер, /GAMES на картці не оновлюється
 cargo build --release -p cyd-game-chess    # один крейт
 ```
 
@@ -79,6 +80,9 @@ espflash write-bin --chip esp32c5 --port /dev/ttyUSB0 0x310000 dist/sdseed.bin
   `Unable to acquire exclusive lock`).
 - **Одна гра без лаунчера** (швидка ітерація): прошити крейт гри в `factory` — плата стартує одразу з
   неї; повернути лаунчер = `bash tools/flash-all.sh`.
+- інсталяція ігор **інкрементальна**: `boot::install_sdpack_to_sd()` спершу звіряє розмір+CRC32
+  файлу на картці й пише лише те, що відрізняється (`sd.game_matches`), а заміна наявного файлу йде
+  через `<NAME>.TMP` + перевірку CRC перед підміною;
 - `otadata` вміє скидати лише `--erase-parts otadata`; `espflash` не вміє активувати OTA-слот — це
   робить лаунчер (`crates/cyd-c5-common/src/boot.rs`).
 

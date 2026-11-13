@@ -273,8 +273,8 @@ pub fn has_sdpack_auto_flag(flash: &mut FlashStorage<'_>) -> bool {
 pub fn install_sdpack_to_sd(
     flash: &mut FlashStorage<'_>,
     sd: &mut SdSlot,
-    mut on_file: impl FnMut(usize, usize, &str),
-) -> Result<usize, LaunchErr> {
+    mut on_file: impl FnMut(usize, usize, &str, bool),
+) -> Result<(usize, usize), LaunchErr> {
     let mut hdr_words = [0u32; 8]; // 32 байти заголовка SDPK
     let hdr_b = unsafe { core::slice::from_raw_parts_mut(hdr_words.as_mut_ptr() as *mut u8, 32) };
     flash
@@ -289,6 +289,7 @@ pub fn install_sdpack_to_sd(
     }
 
     let mut installed = 0usize;
+    let mut skipped = 0usize;
     let buf = io_bytes_mut();
     for idx in 0..count {
         let mut ent_words = [0u32; 8]; // 32 байти на запис
@@ -306,7 +307,15 @@ pub fn install_sdpack_to_sd(
         let fsize = u32::from_le_bytes(ent_b[20..24].try_into().unwrap());
         let expected_crc = u32::from_le_bytes(ent_b[24..28].try_into().unwrap());
 
-        on_file(idx + 1, count, fname);
+        // Інкрементальність: якщо на картці вже лежить файл із тим самим розміром і CRC —
+        // не перезаписуємо (менше записів = менший ризик пошкодити FAT при втраті живлення).
+        let matches = sd.game_matches(fname, fsize, expected_crc, buf);
+        on_file(idx + 1, count, fname, !matches);
+        if matches {
+            installed += 1;
+            skipped += 1;
+            continue;
+        }
 
         let src_base = SDSEED_PACK_OFFSET + rel_off;
         let written_crc = sd.write_game_bin(fname, fsize, buf, |file_off, dst| {
@@ -341,5 +350,5 @@ pub fn install_sdpack_to_sd(
 
     // Знімаємо одноразовий прапорець AUTO, залишаючи сам пакет SDPK у 0x311000 як резерв.
     let _ = flash.erase(SDSEED_OFFSET, SDSEED_OFFSET + 0x1000);
-    Ok(installed)
+    Ok((installed, skipped))
 }

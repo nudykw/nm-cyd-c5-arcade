@@ -468,6 +468,8 @@ struct LauncherState {
     status_msg: LineBuf<32>,
     /// Скільки тіків лишилось на підтвердження форматування картки (0 = не активоване).
     format_armed: u16,
+    /// Скільки разів поспіль картка не монтувалась (для підказки «форматуй»).
+    mount_fails: u8,
 }
 
 impl LauncherState {
@@ -482,6 +484,7 @@ impl LauncherState {
             has_flash_pack: false,
             status_msg: LineBuf::new(),
             format_armed: 0,
+            mount_fails: 0,
         }
     }
 
@@ -534,7 +537,9 @@ impl LauncherState {
         match board.sd.mount() {
             Ok(info) => {
                 self.sd_status = Ok(info);
+                self.mount_fails = 0;
                 let _ = board.sd.ensure_dirs();
+                board.sd.cleanup_temp_files();
                 let mut raw = [SdGameFile::empty(); MAX_GAMES];
                 match board.sd.scan_games(&mut raw) {
                     Ok(n) => {
@@ -605,7 +610,17 @@ impl LauncherState {
             }
             Err(e) => {
                 self.sd_status = Err(e);
-                println!("LAUNCHER: SD недоступна: {:?}", e);
+                self.mount_fails = self.mount_fails.saturating_add(1);
+                println!(
+                    "LAUNCHER: SD недоступна: {:?} (спроба {}){}",
+                    e,
+                    self.mount_fails,
+                    if self.mount_fails >= 3 {
+                        " — натисніть 'FORMAT SD', щоб переформатувати картку"
+                    } else {
+                        ""
+                    }
+                );
             }
         }
     }
@@ -742,7 +757,7 @@ fn render_launcher(st: &LauncherState) {
                     TEXT_MUTED,
                 );
             }
-            Err(_) => {
+            Err(SdErr::NoCard) => {
                 text_centered(LIST_X + 88, 82, "INSERT MICROSD", FontKind::Bold, ACCENT_RED);
                 text_centered(
                     LIST_X + 88,
@@ -755,6 +770,31 @@ fn render_launcher(st: &LauncherState) {
                     LIST_X + 88,
                     126,
                     "AND TAP RESCAN",
+                    FontKind::Small,
+                    TEXT_WHITE,
+                );
+            }
+            Err(_) => {
+                // Картка є, але файлова система не читається — підказуємо форматування
+                text_centered(LIST_X + 88, 74, "CARD FS DAMAGED", FontKind::Bold, ACCENT_RED);
+                text_centered(
+                    LIST_X + 88,
+                    100,
+                    "FAT32 IS UNREADABLE",
+                    FontKind::Small,
+                    TEXT_MUTED,
+                );
+                text_centered(
+                    LIST_X + 88,
+                    122,
+                    "TAP 'FORMAT SD'",
+                    FontKind::Small,
+                    ACCENT_GOLD,
+                );
+                text_centered(
+                    LIST_X + 88,
+                    136,
+                    "(TWICE) TO REBUILD",
                     FontKind::Small,
                     TEXT_WHITE,
                 );
@@ -1077,12 +1117,23 @@ fn try_run_sdpack_install(board: &mut Board, st: &mut LauncherState) {
     let display = &mut board.display;
     let flash = &mut board.flash;
     let sd = &mut board.sd;
-    let res = install_sdpack_to_sd(flash, sd, |idx, total, fname| {
-        println!("  -> запис /GAMES/{} ({}/{})", fname, idx, total);
+    let res = install_sdpack_to_sd(flash, sd, |idx, total, fname, writing| {
+        println!(
+            "  -> {} /GAMES/{} ({}/{})",
+            if writing { "запис   " } else { "без змін" },
+            fname,
+            idx,
+            total
+        );
         draw_modal_progress(display, "INSTALLING TO SD", fname, idx as u32, total as u32);
     });
     match res {
-        Ok(n) => println!("LAUNCHER: успішно встановлено {} ігор у SD:/GAMES/", n),
+        Ok((n, skipped)) => println!(
+            "LAUNCHER: на картці {} ігор (записано {}, пропущено без змін {})",
+            n,
+            n - skipped,
+            skipped
+        ),
         Err(e) => println!("LAUNCHER: помилка інсталяції на SD: {:?}", e),
     }
     st.refresh(board);

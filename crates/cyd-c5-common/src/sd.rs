@@ -401,6 +401,49 @@ impl BlockDevice for SmartSdBlock {
 
 type VolMgr = VolumeManager<SmartSdBlock, FixedTimeSource, 4, 4, 1>;
 
+/// `"CHESS.BIN"` → `"CHESS.TMP"` (8.3): тимчасове ім'я для безпечної заміни файлу.
+fn tmp_name(file_name: &str) -> Result<LineBufName, SdErr> {
+    let base = file_name.split('.').next().unwrap_or(file_name);
+    if base.is_empty() || base.len() > 8 {
+        return Err(SdErr::NotFound);
+    }
+    let mut out = LineBufName::new();
+    out.push_str(base);
+    out.push_str(".TMP");
+    Ok(out)
+}
+
+/// Маленький `no_std`-рядок під ім'я 8.3 (без алокацій).
+struct LineBufName {
+    buf: [u8; 13],
+    len: usize,
+}
+
+impl LineBufName {
+    const fn new() -> Self {
+        Self {
+            buf: [0; 13],
+            len: 0,
+        }
+    }
+
+    fn push_str(&mut self, s: &str) {
+        for b in s.bytes() {
+            if self.len < self.buf.len() {
+                self.buf[self.len] = b;
+                self.len += 1;
+            }
+        }
+    }
+}
+
+impl core::ops::Deref for LineBufName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
+    }
+}
+
 pub struct SdSlot {
     bus: &'static SharedSpiBus,
     mgr: VolMgr,
@@ -605,12 +648,54 @@ impl SdSlot {
     }
 
     /// Записує `/GAMES/<file_name>` із потокового джерела, повертаючи CRC32 записаного файла.
+    /// Записує `/GAMES/<file_name>` з колбеку-джерела.
+    ///
+    /// Схема «безпечного коміту»:
+    /// 1. якщо файлу ще немає — пишемо одразу на місце (один прохід);
+    /// 2. якщо файл уже є — пишемо в `<name>.TMP`, перечитуємо й звіряємо CRC, і лише потім
+    ///    видаляємо старий `<name>.BIN` і копіюємо TMP на його місце.
+    ///
+    /// Так обірване живлення лишає або цілий старий файл, або `<name>.TMP` (який лаунчер
+    /// прибирає на наступному старті), але не напів-записаний `.BIN`.
     pub fn write_game_bin(
         &mut self,
         file_name: &str,
         total_len: u32,
         buf: &mut [u8],
         mut fill_chunk: impl FnMut(u32, &mut [u8]) -> Result<(), SdErr>,
+    ) -> Result<u32, SdErr> {
+        self.ensure_dirs()?;
+        let existed = self.game_matches(
+            file_name,
+            total_len,
+            u32::MAX, // лише «чи файл існує і має потрібний розмір»
+            buf,
+        );
+        if existed {
+            // Замінюємо наявний файл через тимчасовий
+            let tmp = tmp_name(file_name)?;
+            let crc = self.write_new(&tmp, total_len, buf, &mut fill_chunk)?;
+            let (vlen, vcrc) = self.verify_game_crc(&tmp, buf)?;
+            if vlen != total_len || vcrc != crc {
+                let _ = self.delete_file(&tmp);
+                return Err(SdErr::IoError);
+            }
+            let _ = self.delete_file(file_name);
+            self.copy_file(&tmp, file_name, buf)?;
+            let _ = self.delete_file(&tmp);
+            Ok(crc)
+        } else {
+            self.write_new(file_name, total_len, buf, &mut fill_chunk)
+        }
+    }
+
+    /// Записує файл «з нуля» і повертає CRC32 записаних даних.
+    fn write_new(
+        &mut self,
+        file_name: &str,
+        total_len: u32,
+        buf: &mut [u8],
+        fill_chunk: &mut impl FnMut(u32, &mut [u8]) -> Result<(), SdErr>,
     ) -> Result<u32, SdErr> {
         self.ensure_dirs()?;
         let vol = self
@@ -636,7 +721,36 @@ impl SdSlot {
         Ok(running_crc)
     }
 
-    /// Обчислює повний CRC32 файла `/GAMES/<file_name>` на SD-картці для перевірки після запису.
+    /// Копіює `/GAMES/<from>` у `/GAMES/<to>` (посторінково через `buf`).
+    fn copy_file(&mut self, from: &str, to: &str, buf: &mut [u8]) -> Result<u32, SdErr> {
+        self.ensure_mounted()?;
+        let vol = self
+            .mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|_| SdErr::FsError)?;
+        let root = vol.open_root_dir().map_err(|_| SdErr::FsError)?;
+        let games_dir = root.open_dir("GAMES").map_err(|_| SdErr::FsError)?;
+        let src = games_dir
+            .open_file_in_dir(from, Mode::ReadOnly)
+            .map_err(|_| SdErr::NotFound)?;
+        let dst = games_dir
+            .open_file_in_dir(to, Mode::ReadWriteCreateOrTruncate)
+            .map_err(|_| SdErr::FsError)?;
+
+        let mut total = 0u32;
+        loop {
+            let n = src.read(buf).map_err(|_| SdErr::IoError)?;
+            if n == 0 {
+                break;
+            }
+            dst.write(&buf[..n]).map_err(|_| SdErr::IoError)?;
+            total += n as u32;
+        }
+        dst.flush().map_err(|_| SdErr::IoError)?;
+        Ok(total)
+    }
+
+    /// Читає `/GAMES/<file_name>` із картки й повертає `(довжина, CRC32)`.
     pub fn verify_game_crc(&mut self, file_name: &str, buf: &mut [u8]) -> Result<(u32, u32), SdErr> {
         let mut crc = 0u32;
         let len = self.stream_game_bin(file_name, buf, |_off, chunk| {
@@ -644,6 +758,84 @@ impl SdSlot {
             Ok(())
         })?;
         Ok((len, crc))
+    }
+
+    /// Видаляє `/GAMES/<name>` (відсутність файлу — не помилка).
+    pub fn delete_file(&mut self, name: &str) -> Result<(), SdErr> {
+        self.ensure_mounted()?;
+        let vol = self
+            .mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|_| SdErr::FsError)?;
+        let root = vol.open_root_dir().map_err(|_| SdErr::FsError)?;
+        let games_dir = root.open_dir("GAMES").map_err(|_| SdErr::NotFound)?;
+        let _ = games_dir.delete_entry_in_dir(name);
+        Ok(())
+    }
+
+    /// Чи лежить на картці `<name>` із потрібними розміром і CRC.
+    /// `expected_crc == u32::MAX` — перевіряти лише розмір.
+    pub fn game_matches(
+        &mut self,
+        name: &str,
+        expected_len: u32,
+        expected_crc: u32,
+        buf: &mut [u8],
+    ) -> bool {
+        let mut len = 0u32;
+        let mut crc = 0u32;
+        if self
+            .stream_game_bin(name, buf, |_off, chunk| {
+                len += chunk.len() as u32;
+                crc = crc32_update(crc, chunk);
+                Ok(())
+            })
+            .is_err()
+        {
+            return false;
+        }
+        len == expected_len && (expected_crc == u32::MAX || crc == expected_crc)
+    }
+
+    /// Прибирає залишки невдалих записів (`*.TMP`) у `/GAMES`.
+    pub fn cleanup_temp_files(&mut self) {
+        let mut temps = [[0u8; 13]; 16];
+        let mut n = 0usize;
+        if self.ensure_mounted().is_err() {
+            return;
+        }
+        {
+            let Ok(vol) = self.mgr.open_volume(VolumeIdx(0)) else {
+                return;
+            };
+            let Ok(root) = vol.open_root_dir() else {
+                return;
+            };
+            let Ok(dir) = root.open_dir("GAMES") else {
+                return;
+            };
+            let _ = dir.iterate_dir(|de| {
+                if n < temps.len() && !de.attributes.is_directory() && de.name.extension() == b"TMP" {
+                    let mut e = [0u8; 13];
+                    let base = de.name.base_name();
+                    let ext = de.name.extension();
+                    if base.len() + 1 + ext.len() <= 13 {
+                        e[..base.len()].copy_from_slice(base);
+                        e[base.len()] = b'.';
+                        e[base.len() + 1..base.len() + 1 + ext.len()].copy_from_slice(ext);
+                        temps[n] = e;
+                        n += 1;
+                    }
+                }
+                core::ops::ControlFlow::Continue(())
+            });
+        }
+        for name in temps.iter().take(n) {
+            let len = name.iter().position(|&b| b == 0).unwrap_or(13);
+            if let Ok(s) = core::str::from_utf8(&name[..len]) {
+                let _ = self.delete_file(s);
+            }
+        }
     }
 
     /// Форматує картку у **FAT32** (superfloppy: BPB у LBA 0, 32 KB кластери, мітка `GAMES`).
