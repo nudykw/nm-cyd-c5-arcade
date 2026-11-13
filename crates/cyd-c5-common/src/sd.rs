@@ -18,6 +18,29 @@ use crate::{
 pub const SD_INIT_SPI_HZ: u32 = 400_000;
 pub const SD_FAST_SPI_HZ: u32 = 16_000_000;
 
+/// Кількість секторів, які форматтер пише за один виклик (8 × 512 B = 4 KB у BSS).
+const FMT_CHUNK: usize = 8;
+static mut FMT_BYTES: [[u8; 512]; FMT_CHUNK] = [[0u8; 512]; FMT_CHUNK];
+
+/// Пише `count` нульових секторів, починаючи з `lba` (дані беруться зі статичного буфера).
+fn write_zero_sectors(
+    mgr: &VolMgr,
+    lba: u32,
+    count: usize,
+) -> Result<(), SdErr> {
+    debug_assert!(count <= FMT_CHUNK);
+    let mut blocks = [Block {
+        contents: [0u8; 512],
+    }; 1];
+    let raw = unsafe { &*core::ptr::addr_of!(FMT_BYTES) };
+    for i in 0..count {
+        blocks[0].contents.copy_from_slice(&raw[i]);
+        mgr.device(|d| d.write(&blocks, BlockIdx(lba + i as u32)))
+            .map_err(|_| SdErr::IoError)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SdErr {
     NoCard,
@@ -621,6 +644,147 @@ impl SdSlot {
             Ok(())
         })?;
         Ok((len, crc))
+    }
+
+    /// Форматує картку у **FAT32** (superfloppy: BPB у LBA 0, 32 KB кластери, мітка `GAMES`).
+    ///
+    /// Потрібно для відновлення картки, у якої пошкодився FAT (наприклад, якщо живлення зникло
+    /// посеред запису ігор). Після форматування картка одразу монтується; вміст, звісно, втрачається.
+    pub fn format_fat32(
+        &mut self,
+        mut on_progress: impl FnMut(u32, u32),
+    ) -> Result<SdInfo, SdErr> {
+        // 1. Переініціалізація картки на повільній частоті
+        self.mounted = None;
+        self.mgr.device(|d| {
+            d.card.mark_card_uninit();
+            d.card.spi(|dev| dev.set_frequency(SD_INIT_SPI_HZ));
+        });
+        self.bus.send_dummy_clocks(SD_INIT_SPI_HZ, 10);
+
+        let bytes = self
+            .mgr
+            .device(|d| d.card.num_bytes())
+            .map_err(|_| SdErr::NoCard)?;
+        let total = (bytes / 512).min(u32::MAX as u64) as u32;
+        if total < 16 * 1024 {
+            return Err(SdErr::UnsupportedLayout);
+        }
+
+        // Далі пишемо «як є» — без віртуального MBR
+        self.mgr.device(|d| {
+            d.card.spi(|dev| dev.set_frequency(SD_FAST_SPI_HZ));
+            d.mode.set(MapMode::Direct);
+        });
+
+        // 2. Геометрія FAT32: reserved + 2 FAT + data, кластер 64 сектори (32 KB)
+        const RESERVED: u32 = 32;
+        const NFATS: u32 = 2;
+        let spc: u32 = 64;
+        let mut fat_sz = ((total / spc) * 4).div_ceil(512);
+        for _ in 0..4 {
+            let data = total.saturating_sub(RESERVED + NFATS * fat_sz);
+            let clusters = data / spc;
+            let need = ((clusters + 2) * 4).div_ceil(512);
+            if need == fat_sz {
+                break;
+            }
+            fat_sz = need;
+        }
+        let data_start = RESERVED + NFATS * fat_sz;
+        let clusters = total.saturating_sub(data_start) / spc;
+        if clusters == 0 {
+            return Err(SdErr::UnsupportedLayout);
+        }
+
+        // 3. Boot sector (BPB) + резервна копія + FSInfo
+        let mut bpb = [0u8; 512];
+        bpb[0] = 0xEB;
+        bpb[1] = 0x58;
+        bpb[2] = 0x90;
+        bpb[3..11].copy_from_slice(b"MSWIN4.1");
+        bpb[11..13].copy_from_slice(&512u16.to_le_bytes());
+        bpb[13] = spc as u8;
+        bpb[14..16].copy_from_slice(&(RESERVED as u16).to_le_bytes());
+        bpb[16] = NFATS as u8;
+        bpb[21] = 0xF8; // media: fixed disk
+        bpb[24..26].copy_from_slice(&32u16.to_le_bytes());
+        bpb[26..28].copy_from_slice(&64u16.to_le_bytes());
+        bpb[32..36].copy_from_slice(&total.to_le_bytes());
+        bpb[36..40].copy_from_slice(&fat_sz.to_le_bytes());
+        bpb[44..48].copy_from_slice(&2u32.to_le_bytes()); // кореневий каталог — кластер 2
+        bpb[48..50].copy_from_slice(&1u16.to_le_bytes()); // FSInfo
+        bpb[50..52].copy_from_slice(&6u16.to_le_bytes()); // backup boot sector
+        bpb[64] = 0x80;
+        bpb[66] = 0x29;
+        bpb[67..71].copy_from_slice(&0x2026_1113u32.to_le_bytes());
+        bpb[71..82].copy_from_slice(b"GAMES      ");
+        bpb[82..90].copy_from_slice(b"FAT32   ");
+        bpb[510] = 0x55;
+        bpb[511] = 0xAA;
+
+        let mut fsinfo = [0u8; 512];
+        fsinfo[0..4].copy_from_slice(&0x4161_5252u32.to_le_bytes());
+        fsinfo[484..488].copy_from_slice(&0x6141_7272u32.to_le_bytes());
+        fsinfo[488..492].copy_from_slice(&(clusters.saturating_sub(1)).to_le_bytes());
+        fsinfo[492..496].copy_from_slice(&3u32.to_le_bytes());
+        fsinfo[510] = 0x55;
+        fsinfo[511] = 0xAA;
+
+        let total_steps = 3 + 2 * fat_sz + spc;
+        let mut done = 0u32;
+
+        // один блок за раз — для BPB/FSInfo
+        let write_one = |lba: u32, data: &[u8; 512]| -> Result<(), SdErr> {
+            let mut blocks = [Block {
+                contents: [0u8; 512],
+            }];
+            blocks[0].contents.copy_from_slice(data);
+            self.mgr
+                .device(|d| d.write(&blocks, BlockIdx(lba)))
+                .map_err(|_| SdErr::IoError)
+        };
+
+        write_one(0, &bpb)?;
+        write_one(6, &bpb)?;
+        write_one(1, &fsinfo)?;
+        done += 3;
+        on_progress(done, total_steps);
+
+        // 4. Обидві FAT: перший сектор зі службовими записами, решта — нулі
+        let mut fat_head = [0u8; 512];
+        fat_head[0..4].copy_from_slice(&0x0FFF_FFF8u32.to_le_bytes());
+        fat_head[4..8].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
+        fat_head[8..12].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
+
+        for fat in 0..NFATS {
+            let base = RESERVED + fat * fat_sz;
+            write_one(base, &fat_head)?;
+            done += 1;
+            for chunk in 0..(fat_sz - 1).div_ceil(FMT_CHUNK as u32) {
+                let first = base + 1 + chunk * FMT_CHUNK as u32;
+                let count = ((fat_sz - 1) - chunk * FMT_CHUNK as u32).min(FMT_CHUNK as u32) as usize;
+                write_zero_sectors(&self.mgr, first, count)?;
+                done += count as u32;
+                on_progress(done, total_steps);
+            }
+        }
+
+        // 5. Кореневий каталог (кластер 2) — нулі
+        for chunk in 0..spc.div_ceil(FMT_CHUNK as u32) {
+            let first = data_start + chunk * FMT_CHUNK as u32;
+            let count = (spc - chunk * FMT_CHUNK as u32).min(FMT_CHUNK as u32) as usize;
+            write_zero_sectors(&self.mgr, first, count)?;
+            done += count as u32;
+            on_progress(done, total_steps);
+        }
+
+        let _ = clusters;
+
+        // 6. Перечитуємо картку «з нуля»: mount() заново визначає розкладку
+        let info = self.mount()?;
+        on_progress(total_steps, total_steps);
+        Ok(info)
     }
 
     /// Читає збережене значення рекорду з `/SAVES/<save_name>` (наприклад, `"ZUMA.SAV"`).

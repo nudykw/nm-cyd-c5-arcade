@@ -98,6 +98,7 @@ python3 tools/screenshot.py /tmp/s.png /dev/ttyUSB0     # ~20–30 с: кадр 
 # лаунчер
 printf 'PLAY CHESS.BIN\n' > /dev/ttyUSB0
 printf 'DOWN\n' > /dev/ttyUSB0
+printf 'FORMAT\n' > /dev/ttyUSB0     # переформатувати microSD у FAT32 (+ автоінсталяція ігор)
 
 # усередині гри
 printf 'X' > /dev/ttyUSB0        # EXIT → лаунчер
@@ -139,7 +140,7 @@ printf '?' > /dev/ttyUSB0        # знімок екрана
 ```text
 crates/cyd-c5-common/src/   board (Board::init), spi (SharedSpiBus/Device), fb (320×240 Rgb565),
                             touch (XPT2046+калібрування), ui (палітра, 1bpp шрифти, кнопки),
-                            sd (MBR/GPT/Superfloppy, /GAMES, /SAVES), boot (OTA, sdseed, exit)
+                            sd (MBR/GPT/Superfloppy, /GAMES, /SAVES, format_fat32 для відновлення картки), boot (OTA, sdseed, exit)
 launcher/src/bin/main.rs    GameLauncher: меню, рекорди, PLAY/DEMO, прокрутка списку, INSTALL SD
 games/<name>/src/game.rs    правила гри — no_std, без залежностей (+ #[test] усередині)
 games/<name>/src/bin/main.rs малювання/ввід на esp-hal, кнопки EXIT/DEMO, UART

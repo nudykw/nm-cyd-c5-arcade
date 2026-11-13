@@ -466,6 +466,8 @@ struct LauncherState {
     sd_status: Result<SdInfo, SdErr>,
     has_flash_pack: bool,
     status_msg: LineBuf<32>,
+    /// Скільки тіків лишилось на підтвердження форматування картки (0 = не активоване).
+    format_armed: u16,
 }
 
 impl LauncherState {
@@ -479,6 +481,7 @@ impl LauncherState {
             sd_status: Err(SdErr::NoCard),
             has_flash_pack: false,
             status_msg: LineBuf::new(),
+            format_armed: 0,
         }
     }
 
@@ -1012,6 +1015,14 @@ fn render_launcher(st: &LauncherState) {
             false,
             if can_dn { TEXT_WHITE } else { TEXT_MUTED },
         );
+    } else if st.sd_status.is_err() {
+        // Картка є, але FAT не читається — пропонуємо форматування (з підтвердженням)
+        let (label, bg, brd) = if st.format_armed > 0 {
+            ("SURE? TAP", rgb(150, 40, 40), ACCENT_RED)
+        } else {
+            ("FORMAT SD", rgb(120, 60, 20), ACCENT_GOLD)
+        };
+        draw_btn(BTN_SD_ACT, label, FontKind::Small, bg, TEXT_WHITE, brd);
     } else {
         draw_btn(
             BTN_SD_ACT,
@@ -1021,6 +1032,38 @@ fn render_launcher(st: &LauncherState) {
             TEXT_WHITE,
             BTN_STD_BORDER,
         );
+    }
+}
+
+/// Форматує картку у FAT32 і, якщо у флеші є пакет `sdseed`, одразу встановлює всі ігри.
+fn do_format_sd(board: &mut Board, st: &mut LauncherState) {
+    println!("LAUNCHER: форматування SD-картки у FAT32...");
+    draw_modal_progress(&mut board.display, "FORMAT SD", "ERASING...", 0, 1);
+
+    let display = &mut board.display;
+    let sd = &mut board.sd;
+    let res = sd.format_fat32(|done, total| {
+        draw_modal_progress(display, "FORMAT SD", "WRITING FAT32...", done, total);
+    });
+    match res {
+        Ok(info) => println!(
+            "LAUNCHER: картку відформатовано ({} MB, {:?})",
+            info.size_mb, info.layout
+        ),
+        Err(e) => {
+            println!("LAUNCHER: форматування не вдалося: {:?}", e);
+            draw_modal_progress(display, "FORMAT FAILED", "CHECK CARD", 0, 1);
+            board.delay.delay_millis(1200);
+            st.refresh(board);
+            return;
+        }
+    }
+
+    st.format_armed = 0;
+    if has_sdpack_in_flash(&mut board.flash) {
+        try_run_sdpack_install(board, st);
+    } else {
+        st.refresh(board);
     }
 }
 
@@ -1108,12 +1151,25 @@ fn main() -> ! {
     let mut cmd_len = 0usize;
 
     loop {
+        // підтвердження форматування «живе» ~5 секунд
+        if st.format_armed > 0 {
+            st.format_armed -= 1;
+            if st.format_armed == 0 {
+                render_launcher(&st);
+                board.present_all();
+            }
+        }
+
         while let Some(ch) = board.poll_uart_byte() {
             if ch == b'\n' || ch == b'\r' {
                 if cmd_len > 0 {
                     if let Ok(line) = core::str::from_utf8(&cmd_buf[..cmd_len]) {
                         let line = line.trim();
-                        if line == "RESCAN" {
+                        if line == "FORMAT" {
+                            do_format_sd(&mut board, &mut st);
+                            render_launcher(&st);
+                            board.present_all();
+                        } else if line == "RESCAN" {
                             st.refresh(&mut board);
                             render_launcher(&st);
                             board.present_all();
@@ -1360,6 +1416,14 @@ fn main() -> ! {
                     }
                 } else if st.count > VISIBLE_ROWS && BTN_SCR_MID.contains(p) {
                     st.refresh(&mut board);
+                    dirty = true;
+                } else if st.sd_status.is_err() && BTN_SD_ACT.contains(p) {
+                    // перший тап — «озброїти», другий (протягом ~5 с) — форматувати
+                    if st.format_armed > 0 {
+                        do_format_sd(&mut board, &mut st);
+                    } else {
+                        st.format_armed = 320;
+                    }
                     dirty = true;
                 } else if st.count <= VISIBLE_ROWS && BTN_SD_ACT.contains(p) {
                     st.refresh(&mut board);

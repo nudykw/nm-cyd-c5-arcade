@@ -17,8 +17,9 @@
 
 ![Демо прошивки на платі](docs/demo.gif)
 
-Кадри зняті з живого екрана плати (`python3 tools/screenshot.py`), у режимі `DEMO`:
-**CYBER MAZE** (3D-рейкаст: дрон у прицілі, далі вбитий дрон і `SCR 120`) →
+Кадри зняті з живого екрана плати (`python3 tools/screenshot.py`):
+**GameLauncher** (список 11 ігор на microSD, картка TIC-TAC-TOE) → **CYBER MAZE**
+(3D-рейкаст: дрон у прицілі, далі вбитий дрон і `SCR 120`) →
 **Checkers** (ШІ проти ШІ) → **Chess** (автогра, `MV: f5c8`) → **Sudoku** (підказки `HINT`) →
 **3D Sokoban** (діорама з обертанням камери).
 GIF складено власним енкодером на stdlib: `python3 tools/make-gif.py out.gif frame*.png`.
@@ -175,7 +176,9 @@ microSD (з прогрес-баром) і далі працюватиме зви
 
 Хочете оновити ігри без USB — вставте microSD у кардрідер і скопіюйте `dist/sd/GAMES/*.BIN` у `/GAMES/`
 (FAT32, імена у форматі 8.3). Порожня картка + кнопка **`INSTALL SD`** у лаунчері відновить усі ігри з
-розділу `sdseed` без комп'ютера.
+розділу `sdseed` без комп'ютера. Якщо картка не монтується взагалі (пошкоджений FAT), лаунчер
+пропонує **`FORMAT SD`** — форматує її у FAT32 (superfloppy, 32 KB кластери, мітка `GAMES`) і
+одразу ставить усі ігри.
 
 ---
 
@@ -198,7 +201,7 @@ python3 tools/screenshot.py /tmp/screen.png /dev/ttyUSB0
 
 | де | команди UART |
 |---|---|
-| лаунчер | `PLAY <NAME.BIN>`, `DEMO <NAME.BIN>`, `RESCAN`, `CLEARSAVES`, `DOWN` / `UP` (прокрутка) |
+| лаунчер | `PLAY <NAME.BIN>`, `DEMO <NAME.BIN>`, `RESCAN`, `CLEARSAVES`, `DOWN` / `UP` (прокрутка), `FORMAT` (переформатувати microSD у FAT32) |
 | будь-яка гра | `X` / `Q` — вихід, `D` — DEMO, `?` — знімок |
 | шахи / шашки / ґомоку | `N` — нова партія, `U` — undo, `A` — режим, `>` + хід (напр. `>e2e4`) |
 | судоку | `1..9`, `E` — стерти, `H` — підказка, `C` — прибрати помилки |
@@ -257,6 +260,7 @@ python3 tools/screenshot.py /tmp/screen.png /dev/ttyUSB0
 | `Unable to acquire exclusive lock` від `espflash` | порт зайнятий (`tio`, монітор, інший `espflash`): `fuser -v /dev/ttyUSB0`, закрити |
 | `Permission denied` на `/dev/ttyUSB0` | користувач не в групі `uucp`: `sudo usermod -aG uucp $USER` + релогін |
 | Прошивка залилася, але в UART тиша, на `ttyACM0` — `alive N` | `esp-println` зібраний з `auto`: має бути `features = ["uart"]` (див. `docs/HARDWARE.md`) |
+| `LAUNCHER: SD недоступна: FsError` (картка є, але не монтується) | FAT пошкоджено (наприклад, живлення зникло посеред запису): у лаунчері — кнопка **`FORMAT SD`** (два тапи: перший «озброює», другий форматує), або UART-команда `FORMAT`. Після форматування лаунчер сам встановлює всі 11 ігор із розділу `sdseed` |
 | Дисплей білий / сміття, SD не монтується | не піднято один із CS до старту SPI2, або картка не FAT32/MBR |
 | `Tool doesn't match supported version…` при збірці C-проєктів | у шелі одночасно активні ESP-IDF і Rust-toolchain (не стосується цього репозиторію) |
 | `cargo build` не бачить `riscv32imac-unknown-none-elf` | `rustup target add riscv32imac-unknown-none-elf` |
