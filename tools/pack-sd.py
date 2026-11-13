@@ -18,7 +18,19 @@ def main() -> None:
     games_dir = sys.argv[1]
     out_path = sys.argv[2]
 
-    order = ["TTT.BIN", "G2048.BIN", "JEWELS.BIN", "ZUMA.BIN", "BIRDS.BIN"]
+    order = [
+        "TTT.BIN",
+        "G2048.BIN",
+        "JEWELS.BIN",
+        "ZUMA.BIN",
+        "BIRDS.BIN",
+        "CHESS.BIN",
+        "CHECKERS.BIN",
+        "SUDOKU.BIN",
+        "GOMOKU.BIN",
+        "CYBERMZ.BIN",
+        "SOKOBAN.BIN",
+    ]
     found = sorted(
         f for f in os.listdir(games_dir) if f.upper().endswith(".BIN") and os.path.isfile(os.path.join(games_dir, f))
     )

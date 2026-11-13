@@ -1,0 +1,26 @@
+[package]
+name = "cyd-game-cybermaze"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cyd-game-cybermaze"
+path = "src/bin/main.rs"
+
+[dependencies]
+esp-hal.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-storage.workspace = true
+esp-println.workspace = true
+critical-section.workspace = true
+mipidsi.workspace = true
+embedded-graphics.workspace = true
+embedded-hal.workspace = true
+embedded-hal-bus.workspace = true
+embedded-sdmmc.workspace = true
+cyd-c5-common.workspace = true
+
+[features]
+demo = []
+framedump = []

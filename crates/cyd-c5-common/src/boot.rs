@@ -77,6 +77,17 @@ pub fn should_start_demo(flash: &mut FlashStorage<'_>, feature_demo: bool) -> bo
     feature_demo || (read_launch_flags(flash) & LAUNCH_FLAG_DEMO) != 0
 }
 
+/// Повертає ім'я останнього завантаженого у `ota_0` образу (наприклад, `"CHESS.BIN"`), якщо штамп валідний.
+pub fn last_launched_name<'a>(flash: &mut FlashStorage<'_>, out: &'a mut [u8; 16]) -> Option<&'a str> {
+    let stamp = read_stamp(flash)?;
+    *out = stamp.name;
+    let len = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+    if len == 0 {
+        return None;
+    }
+    core::str::from_utf8(&out[..len]).ok()
+}
+
 fn read_stamp(flash: &mut FlashStorage<'_>) -> Option<LaunchStamp> {
     let mut stamp = LaunchStamp {
         magic: 0,

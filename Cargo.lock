@@ -162,6 +162,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyd-game-checkers"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "cyd-c5-common",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-storage",
+ "mipidsi",
+]
+
+[[package]]
+name = "cyd-game-chess"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "cyd-c5-common",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-storage",
+ "mipidsi",
+]
+
+[[package]]
+name = "cyd-game-cybermaze"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "cyd-c5-common",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-storage",
+ "mipidsi",
+]
+
+[[package]]
 name = "cyd-game-g2048"
 version = "0.1.0"
 dependencies = [
@@ -179,7 +230,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyd-game-gomoku"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "cyd-c5-common",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-storage",
+ "mipidsi",
+]
+
+[[package]]
 name = "cyd-game-jewels"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "cyd-c5-common",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-storage",
+ "mipidsi",
+]
+
+[[package]]
+name = "cyd-game-sokoban3d"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "cyd-c5-common",
+ "embedded-graphics",
+ "embedded-hal 1.0.0",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-storage",
+ "mipidsi",
+]
+
+[[package]]
+name = "cyd-game-sudoku"
 version = "0.1.0"
 dependencies = [
  "critical-section",

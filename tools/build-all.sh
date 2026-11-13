@@ -13,7 +13,13 @@ for pair in \
   "g2048:games/g2048/src/game.rs" \
   "jewels:games/jewels/src/game.rs" \
   "zuma:games/zuma/src/game.rs" \
-  "birds:games/birds/src/game.rs"
+  "birds:games/birds/src/game.rs" \
+  "chess:games/chess/src/game.rs" \
+  "checkers:games/checkers/src/game.rs" \
+  "sudoku:games/sudoku/src/game.rs" \
+  "gomoku:games/gomoku/src/game.rs" \
+  "cybermaze:games/cybermaze/src/game.rs" \
+  "sokoban3d:games/sokoban3d/src/game.rs"
 do
   name="${pair%%:*}"
   src="${pair#*:}"
@@ -36,7 +42,13 @@ for map in \
   "cyd-game-g2048:G2048.BIN" \
   "cyd-game-jewels:JEWELS.BIN" \
   "cyd-game-zuma:ZUMA.BIN" \
-  "cyd-game-birds:BIRDS.BIN"
+  "cyd-game-birds:BIRDS.BIN" \
+  "cyd-game-chess:CHESS.BIN" \
+  "cyd-game-checkers:CHECKERS.BIN" \
+  "cyd-game-sudoku:SUDOKU.BIN" \
+  "cyd-game-gomoku:GOMOKU.BIN" \
+  "cyd-game-cybermaze:CYBERMZ.BIN" \
+  "cyd-game-sokoban3d:SOKOBAN.BIN"
 do
   bin="${map%%:*}"
   out="${map#*:}"

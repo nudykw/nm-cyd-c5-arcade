@@ -8,6 +8,12 @@ members = [
     "games/jewels",
     "games/zuma",
     "games/birds",
+    "games/chess",
+    "games/checkers",
+    "games/sudoku",
+    "games/gomoku",
+    "games/cybermaze",
+    "games/sokoban3d",
 ]
 
 [workspace.package]

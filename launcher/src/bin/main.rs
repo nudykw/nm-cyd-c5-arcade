@@ -6,7 +6,8 @@ use cyd_c5_common::{
     Board, Display, SCREEN_H, SCREEN_W,
     board::present_rect_on,
     boot::{
-        has_sdpack_auto_flag, has_sdpack_in_flash, install_sdpack_to_sd, launch_game_from_sd,
+        has_sdpack_auto_flag, has_sdpack_in_flash, install_sdpack_to_sd, last_launched_name,
+        launch_game_from_sd,
     },
     dump_frame_hex, put_px,
     sd::{LayoutKind, SdErr, SdGameFile, SdInfo},
@@ -38,8 +39,8 @@ esp_bootloader_esp_idf::esp_app_desc!(
     0
 );
 
-const MAX_GAMES: usize = 12;
-const PAGE_SIZE: usize = 5;
+const MAX_GAMES: usize = 24;
+const VISIBLE_ROWS: usize = 5;
 
 #[derive(Clone, Copy)]
 struct KnownGameMeta {
@@ -98,6 +99,60 @@ const KNOWN_GAMES: &[KnownGameMeta] = &[
         order: 4,
         icon_id: 5,
     },
+    KnownGameMeta {
+        bin_name: "CHESS.BIN",
+        save_name: "CHESS.SAV",
+        title: "CHESS",
+        genre: "CLASSIC 8x8",
+        supports_demo: true,
+        order: 5,
+        icon_id: 6,
+    },
+    KnownGameMeta {
+        bin_name: "CHECKERS.BIN",
+        save_name: "CHECKERS.SAV",
+        title: "CHECKERS",
+        genre: "DRAUGHTS 64",
+        supports_demo: true,
+        order: 6,
+        icon_id: 7,
+    },
+    KnownGameMeta {
+        bin_name: "SUDOKU.BIN",
+        save_name: "SUDOKU.SAV",
+        title: "SUDOKU",
+        genre: "9x9 LOGIC",
+        supports_demo: true,
+        order: 7,
+        icon_id: 8,
+    },
+    KnownGameMeta {
+        bin_name: "GOMOKU.BIN",
+        save_name: "GOMOKU.SAV",
+        title: "GOMOKU",
+        genre: "5 IN A ROW 10x10",
+        supports_demo: true,
+        order: 8,
+        icon_id: 9,
+    },
+    KnownGameMeta {
+        bin_name: "CYBERMZ.BIN",
+        save_name: "CYBERMZ.SAV",
+        title: "CYBER MAZE",
+        genre: "3D RAYCAST FPS",
+        supports_demo: true,
+        order: 9,
+        icon_id: 10,
+    },
+    KnownGameMeta {
+        bin_name: "SOKOBAN.BIN",
+        save_name: "SOKOBAN.SAV",
+        title: "3D SOKOBAN",
+        genre: "CUBE PUZZLE 3D",
+        supports_demo: true,
+        order: 10,
+        icon_id: 11,
+    },
 ];
 
 fn lookup_meta(file_name: &str) -> Option<&'static KnownGameMeta> {
@@ -149,9 +204,18 @@ impl MenuEntry {
 // Геометрія екрана GameLauncher (320×240)
 const LIST_X: i32 = 6;
 const LIST_Y: i32 = 31;
-const LIST_W: u32 = 176;
+const LIST_W_FULL: u32 = 176;
+const LIST_W_SCROLL: u32 = 162;
 const ROW_H: i32 = 39;
 const ROW_GAP: i32 = 2;
+const LIST_H: i32 = (VISIBLE_ROWS as i32) * ROW_H + ((VISIBLE_ROWS as i32) - 1) * ROW_GAP; // 203
+
+// Смуга прокрутки праворуч від списку ігор (видима, коли ігор > VISIBLE_ROWS)
+const SB_X: i32 = 170;
+const SB_Y: i32 = LIST_Y;
+const SB_W: u32 = 14;
+const SB_H: i32 = LIST_H;
+const SB_CAP_H: i32 = 18;
 
 const RIGHT_X: i32 = 188;
 const RIGHT_W: u32 = 126;
@@ -161,7 +225,17 @@ const INFO_H: u32 = 102;
 const BTN_PLAY: BtnRect = BtnRect::new(RIGHT_X, 138, RIGHT_W, 32);
 const BTN_DEMO: BtnRect = BtnRect::new(RIGHT_X, 174, RIGHT_W, 28);
 const BTN_SD_ACT: BtnRect = BtnRect::new(RIGHT_X, 206, RIGHT_W, 26);
+const BTN_SCR_UP: BtnRect = BtnRect::new(RIGHT_X, 206, 38, 26);
+const BTN_SCR_MID: BtnRect = BtnRect::new(RIGHT_X + 41, 206, 44, 26);
+const BTN_SCR_DN: BtnRect = BtnRect::new(RIGHT_X + 88, 206, 38, 26);
 const HDR_SD_BOX: BtnRect = BtnRect::new(190, 3, 124, 20);
+
+fn draw_arrow_v(cx: i32, cy: i32, up: bool, col: Rgb565) {
+    for row in 0..5i32 {
+        let half = if up { row } else { 4 - row };
+        fill(cx - half, cy - 2 + row, (half * 2 + 1) as u32, 1, col);
+    }
+}
 
 fn draw_disc(cx: i32, cy: i32, r: i32, col: Rgb565) {
     let r2 = r * r;
@@ -247,6 +321,132 @@ fn draw_game_icon(x: i32, y: i32, icon_id: u8) {
             put_px(x + 20, y + 16, rgb(24, 48, 24));
             put_px(x + 23, y + 16, rgb(24, 48, 24));
         }
+        6 => {
+            // Chess: шахова дошка 4×4 + золота королівська тура/корона
+            fill(x, y, 28, 28, rgb(138, 94, 58));
+            for r in 0..4i32 {
+                for c in 0..4i32 {
+                    if (r + c) & 1 == 0 {
+                        fill(x + 2 + c * 6, y + 2 + r * 6, 6, 6, rgb(224, 202, 166));
+                    }
+                }
+            }
+            stroke_rect(x, y, 28, 28, ACCENT_GOLD);
+            // Фігура в центрі з темним контуром
+            fill(x + 9, y + 20, 10, 4, rgb(20, 24, 34));
+            fill(x + 10, y + 21, 8, 2, ACCENT_GOLD);
+            fill(x + 11, y + 11, 6, 9, rgb(20, 24, 34));
+            fill(x + 12, y + 12, 4, 8, TEXT_WHITE);
+            draw_disc(x + 14, y + 9, 4, rgb(20, 24, 34));
+            draw_disc(x + 14, y + 9, 3, TEXT_WHITE);
+            fill(x + 13, y + 4, 2, 4, ACCENT_GOLD);
+            fill(x + 12, y + 5, 4, 2, ACCENT_GOLD);
+        }
+        7 => {
+            // Checkers: червонодеревна дошка + біла дамка з короною й темна шашка
+            fill(x, y, 28, 28, rgb(104, 54, 42));
+            for r in 0..4i32 {
+                for c in 0..4i32 {
+                    if (r + c) & 1 == 0 {
+                        fill(x + 2 + c * 6, y + 2 + r * 6, 6, 6, rgb(236, 220, 190));
+                    }
+                }
+            }
+            stroke_rect(x, y, 28, 28, ACCENT_GOLD);
+            // Чорна шашка зверху праворуч
+            draw_disc(x + 19, y + 9, 5, TEXT_WHITE);
+            draw_disc(x + 19, y + 9, 4, rgb(28, 34, 48));
+            // Біла дамка знизу ліворуч із золотою короною
+            draw_disc(x + 9, y + 19, 6, rgb(20, 22, 30));
+            draw_disc(x + 9, y + 19, 5, rgb(248, 242, 226));
+            fill(x + 7, y + 18, 5, 3, ACCENT_GOLD);
+            put_px(x + 7, y + 17, ACCENT_GOLD);
+            put_px(x + 9, y + 17, ACCENT_GOLD);
+            put_px(x + 11, y + 17, ACCENT_GOLD);
+        }
+        8 => {
+            // Sudoku: сітка 3×3 з великою золотою «9» і підсвіченою клітинкою
+            fill_rounded(x, y, 28, 28, 4, rgb(24, 30, 46));
+            stroke_rect(x, y, 28, 28, rgb(78, 96, 132));
+            for i in 1..3i32 {
+                fill(x + 3 + i * 7, y + 4, 1, 20, rgb(72, 92, 128));
+                fill(x + 4, y + 3 + i * 7, 20, 1, rgb(72, 92, 128));
+            }
+            // Підсвічена клітинка
+            fill(x + 11, y + 11, 6, 6, rgb(44, 96, 138));
+            // Велика «9» у центрі
+            fill(x + 12, y + 9, 4, 1, ACCENT_GOLD);
+            fill(x + 16, y + 9, 1, 6, ACCENT_GOLD);
+            fill(x + 12, y + 14, 4, 1, ACCENT_GOLD);
+            fill(x + 12, y + 15, 1, 4, ACCENT_GOLD);
+            fill(x + 12, y + 18, 4, 1, ACCENT_GOLD);
+            // Цифри-підказки на периферії
+            put_px(x + 7, y + 8, ACCENT_CYAN);
+            put_px(x + 20, y + 8, ACCENT_CYAN);
+            put_px(x + 7, y + 20, ACCENT_CYAN);
+            put_px(x + 20, y + 20, ACCENT_CYAN);
+            put_px(x + 8, y + 8, ACCENT_CYAN);
+        }
+        9 => {
+            // Gomoku: дерев'яна дошка з чорним і білим каменями
+            fill_rounded(x, y, 28, 28, 4, rgb(206, 166, 114));
+            stroke_rect(x, y, 28, 28, rgb(120, 82, 46));
+            for i in 1..3i32 {
+                fill(x + 3 + i * 7, y + 3, 1, 22, rgb(96, 66, 40));
+                fill(x + 3, y + 3 + i * 7, 22, 1, rgb(96, 66, 40));
+            }
+            draw_disc(x + 10, y + 11, 5, rgb(6, 6, 8));
+            draw_disc(x + 10, y + 11, 3, rgb(36, 38, 46));
+            draw_disc(x + 19, y + 20, 5, rgb(150, 144, 134));
+            draw_disc(x + 19, y + 20, 4, rgb(240, 238, 230));
+            put_px(x + 18, y + 19, TEXT_WHITE);
+            put_px(x + 10, y + 10, rgb(96, 102, 118));
+        }
+        10 => {
+            // Cyber Maze: перспективний коридор + дрон у прицілі
+            fill_rounded(x, y, 28, 28, 4, rgb(10, 16, 26));
+            stroke_rect(x, y, 28, 28, ACCENT_CYAN);
+            // стеля і підлога
+            fill(x + 2, y + 2, 24, 9, rgb(18, 30, 46));
+            fill(x + 2, y + 20, 24, 6, rgb(26, 26, 34));
+            // стіни-тунель
+            for i in 0..5i32 {
+                let inset = i * 3;
+                let col = if i % 2 == 0 {
+                    rgb(48, 150, 172)
+                } else {
+                    rgb(28, 92, 116)
+                };
+                fill(x + 2 + inset, y + 11, 2, 9, col);
+                fill(x + 26 - inset, y + 11, 2, 9, col);
+            }
+            // дрон у центрі
+            fill(x + 12, y + 12, 5, 6, ACCENT_RED);
+            fill(x + 13, y + 13, 3, 2, TEXT_WHITE);
+            // приціл
+            fill(x + 14, y + 8, 1, 2, ACCENT_CYAN);
+            fill(x + 14, y + 20, 1, 2, ACCENT_CYAN);
+            fill(x + 9, y + 14, 2, 1, ACCENT_CYAN);
+            fill(x + 18, y + 14, 2, 1, ACCENT_CYAN);
+        }
+        11 => {
+            // 3D Sokoban: ізометричний ящик на цілі + гравець
+            fill_rounded(x, y, 28, 28, 4, rgb(12, 16, 26));
+            stroke_rect(x, y, 28, 28, ACCENT_GOLD);
+            // Підлога-ромб
+            for dy in -6i32..=6 {
+                let hw = 12 - dy.abs() * 2;
+                fill(x + 14 - hw, y + 18 + dy, (hw * 2) as u32, 1, rgb(38, 46, 62));
+            }
+            // Ящик на цілі (ізометрія)
+            fill(x + 10, y + 10, 9, 6, rgb(112, 226, 132));
+            fill(x + 8, y + 13, 9, 5, rgb(66, 168, 96));
+            fill(x + 15, y + 13, 9, 5, rgb(44, 122, 72));
+            fill(x + 13, y + 15, 4, 4, rgb(236, 194, 74));
+            // Гравець-кубик
+            fill(x + 4, y + 6, 4, 3, rgb(132, 234, 252));
+            fill(x + 3, y + 8, 4, 3, rgb(64, 176, 206));
+        }
         _ => {
             // Картридж для будь-якого стороннього .BIN
             fill_rounded(x, y, 28, 28, 4, rgb(52, 62, 82));
@@ -261,7 +461,8 @@ struct LauncherState {
     entries: [MenuEntry; MAX_GAMES],
     count: usize,
     selected: usize,
-    page: usize,
+    scroll: usize,
+    first_boot_sync: bool,
     sd_status: Result<SdInfo, SdErr>,
     has_flash_pack: bool,
     status_msg: LineBuf<32>,
@@ -273,17 +474,59 @@ impl LauncherState {
             entries: [MenuEntry::empty(); MAX_GAMES],
             count: 0,
             selected: 0,
-            page: 0,
+            scroll: 0,
+            first_boot_sync: true,
             sd_status: Err(SdErr::NoCard),
             has_flash_pack: false,
             status_msg: LineBuf::new(),
         }
     }
 
+    #[inline]
+    fn max_scroll(&self) -> usize {
+        self.count.saturating_sub(VISIBLE_ROWS)
+    }
+
+    fn clamp_scroll(&mut self) {
+        let ms = self.max_scroll();
+        if self.scroll > ms {
+            self.scroll = ms;
+        }
+    }
+
+    fn ensure_selected_visible(&mut self) {
+        if self.count == 0 {
+            self.scroll = 0;
+            return;
+        }
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + VISIBLE_ROWS {
+            self.scroll = self.selected + 1 - VISIBLE_ROWS;
+        }
+        self.clamp_scroll();
+    }
+
+    fn scroll_by(&mut self, delta: i32) -> bool {
+        let old = self.scroll;
+        let ms = self.max_scroll() as i32;
+        let next = ((self.scroll as i32) + delta).clamp(0, ms) as usize;
+        self.scroll = next;
+        self.scroll != old
+    }
+
     fn refresh(&mut self, board: &mut Board) {
         self.has_flash_pack = has_sdpack_in_flash(&mut board.flash);
         self.count = 0;
         self.status_msg.clear();
+
+        let mut cached_buf = [0u8; 16];
+        let cached_len = if self.first_boot_sync {
+            last_launched_name(&mut board.flash, &mut cached_buf).map_or(0, |s| s.len())
+        } else {
+            0
+        };
+        self.first_boot_sync = false;
 
         match board.sd.mount() {
             Ok(info) => {
@@ -324,10 +567,17 @@ impl LauncherState {
                                 }
                             }
                         }
+                        if cached_len > 0
+                            && let Ok(cname) = core::str::from_utf8(&cached_buf[..cached_len])
+                            && let Some(idx) = (0..self.count)
+                                .find(|&i| self.entries[i].sd_file.file_name_str() == cname)
+                        {
+                            self.selected = idx;
+                        }
                         if self.selected >= self.count {
                             self.selected = 0;
                         }
-                        self.page = self.selected / PAGE_SIZE;
+                        self.ensure_selected_visible();
                         println!(
                             "LAUNCHER: SD змонтовано ({} MB, {:?}), знайдено ігор: {}",
                             info.size_mb, info.layout, self.count
@@ -434,8 +684,8 @@ fn render_launcher(st: &LauncherState) {
 
     // Ліва колонка: список ігор із `/GAMES/*.BIN`
     if st.count == 0 {
-        fill(LIST_X, LIST_Y, LIST_W, 201, CARD_BG);
-        stroke_rect(LIST_X, LIST_Y, LIST_W, 201, BTN_STD_BORDER);
+        fill(LIST_X, LIST_Y, LIST_W_FULL, 201, CARD_BG);
+        stroke_rect(LIST_X, LIST_Y, LIST_W_FULL, 201, BTN_STD_BORDER);
         match st.sd_status {
             Ok(_) => {
                 text_centered(LIST_X + 88, 74, "NO GAMES IN", FontKind::Bold, ACCENT_GOLD);
@@ -451,7 +701,7 @@ fn render_launcher(st: &LauncherState) {
                     text_centered(
                         LIST_X + 88,
                         144,
-                        "TO COPY ALL 5 GAMES",
+                        "TO COPY ALL 11 GAMES",
                         FontKind::Small,
                         TEXT_MUTED,
                     );
@@ -508,8 +758,15 @@ fn render_launcher(st: &LauncherState) {
             }
         }
     } else {
-        let start = st.page * PAGE_SIZE;
-        let end = (start + PAGE_SIZE).min(st.count);
+        let has_scroll = st.count > VISIBLE_ROWS;
+        let row_w = if has_scroll {
+            LIST_W_SCROLL
+        } else {
+            LIST_W_FULL
+        };
+        let start = st.scroll.min(st.max_scroll());
+        let end = (start + VISIBLE_ROWS).min(st.count);
+
         for slot in 0..(end - start) {
             let idx = start + slot;
             let e = &st.entries[idx];
@@ -517,15 +774,15 @@ fn render_launcher(st: &LauncherState) {
             let is_sel = idx == st.selected;
             let bg = if is_sel { CARD_SEL_BG } else { CARD_BG };
             let brd = if is_sel { ACCENT_CYAN } else { rgb(52, 66, 92) };
-            fill(LIST_X, ry, LIST_W, ROW_H as u32, bg);
-            stroke_rect(LIST_X, ry, LIST_W, ROW_H as u32, brd);
+            fill(LIST_X, ry, row_w, ROW_H as u32, bg);
+            stroke_rect(LIST_X, ry, row_w, ROW_H as u32, brd);
             if is_sel {
                 fill(LIST_X + 1, ry + 1, 3, (ROW_H - 2) as u32, ACCENT_GOLD);
             }
 
-            draw_game_icon(LIST_X + 7, ry + 5, e.icon_id);
+            draw_game_icon(LIST_X + 6, ry + 5, e.icon_id);
 
-            let tx = LIST_X + 41;
+            let tx = LIST_X + 40;
             text(
                 tx,
                 ry + 6,
@@ -544,8 +801,54 @@ fn render_launcher(st: &LauncherState) {
             }
 
             if e.supports_demo {
-                fill(LIST_X + 140, ry + 20, 30, 12, rgb(26, 78, 58));
-                text(LIST_X + 143, ry + 21, "DEMO", FontKind::Small, ACCENT_GREEN);
+                let badge_x = LIST_X + (row_w as i32) - 34;
+                fill(badge_x, ry + 20, 30, 12, rgb(26, 78, 58));
+                text(badge_x + 3, ry + 21, "DEMO", FontKind::Small, ACCENT_GREEN);
+            }
+        }
+
+        // Інтерактивна смуга прокрутки поруч зі списком
+        if has_scroll {
+            fill(SB_X, SB_Y, SB_W, SB_H as u32, PANEL_BG);
+            stroke_rect(SB_X, SB_Y, SB_W, SB_H as u32, BTN_STD_BORDER);
+
+            // Верхня та нижня стрілки на смузі прокрутки
+            fill(SB_X + 1, SB_Y + 1, SB_W - 2, (SB_CAP_H - 1) as u32, BTN_STD_BG);
+            fill(SB_X + 1, SB_Y + SB_CAP_H, SB_W - 2, 1, BTN_STD_BORDER);
+            draw_arrow_v(
+                SB_X + (SB_W as i32) / 2,
+                SB_Y + SB_CAP_H / 2,
+                true,
+                if start > 0 { ACCENT_CYAN } else { TEXT_MUTED },
+            );
+
+            let bot_y = SB_Y + SB_H - SB_CAP_H;
+            fill(SB_X + 1, bot_y, SB_W - 2, (SB_CAP_H - 1) as u32, BTN_STD_BG);
+            fill(SB_X + 1, bot_y - 1, SB_W - 2, 1, BTN_STD_BORDER);
+            draw_arrow_v(
+                SB_X + (SB_W as i32) / 2,
+                bot_y + SB_CAP_H / 2,
+                false,
+                if start < st.max_scroll() {
+                    ACCENT_CYAN
+                } else {
+                    TEXT_MUTED
+                },
+            );
+
+            // Повзунок (thumb) пропорційно кількості ігор і поточному зсуву
+            let track_y = SB_Y + SB_CAP_H + 2;
+            let track_h = SB_H - 2 * SB_CAP_H - 4;
+            let thumb_h = (((track_h as usize) * VISIBLE_ROWS) / st.count).max(22) as i32;
+            let max_s = st.max_scroll().max(1);
+            let thumb_y =
+                track_y + (((track_h - thumb_h) as usize * start) / max_s) as i32;
+
+            fill(SB_X + 2, thumb_y, SB_W - 4, thumb_h as u32, ACCENT_CYAN);
+            stroke_rect(SB_X + 2, thumb_y, SB_W - 4, thumb_h as u32, TEXT_WHITE);
+            let mid_ty = thumb_y + thumb_h / 2;
+            for dy in [-3i32, 0, 3] {
+                fill(SB_X + 4, mid_ty + dy, SB_W - 8, 1, BG_DEEP);
             }
         }
     }
@@ -653,7 +956,7 @@ fn render_launcher(st: &LauncherState) {
         );
     }
 
-    // Нижня сервісна кнопка: якщо SD порожня й у флеші є резервний пакет — показуємо INSTALL SD
+    // Нижня сервісна кнопка або кнопки прокрутки списку (`▲` / `1-5/6` / `▼`)
     if st.sd_status.is_ok() && st.count == 0 && st.has_flash_pack {
         draw_btn(
             BTN_SD_ACT,
@@ -663,17 +966,51 @@ fn render_launcher(st: &LauncherState) {
             TEXT_WHITE,
             ACCENT_GOLD,
         );
-    } else if st.count > PAGE_SIZE {
-        let mut pg = LineBuf::<20>::new();
-        let pages = st.count.div_ceil(PAGE_SIZE);
-        let _ = write!(pg, "PAGE {}/{} >>", st.page + 1, pages);
+    } else if st.count > VISIBLE_ROWS {
+        let can_up = st.scroll > 0 || st.selected > 0;
+        let can_dn = st.scroll < st.max_scroll() || st.selected + 1 < st.count;
+
         draw_btn(
-            BTN_SD_ACT,
-            pg.as_str(),
+            BTN_SCR_UP,
+            "",
             FontKind::Small,
             BTN_STD_BG,
             TEXT_WHITE,
+            if can_up { ACCENT_CYAN } else { BTN_STD_BORDER },
+        );
+        draw_arrow_v(
+            BTN_SCR_UP.x + (BTN_SCR_UP.w as i32) / 2,
+            BTN_SCR_UP.y + (BTN_SCR_UP.h as i32) / 2,
+            true,
+            if can_up { TEXT_WHITE } else { TEXT_MUTED },
+        );
+
+        let first = st.scroll + 1;
+        let last = (st.scroll + VISIBLE_ROWS).min(st.count);
+        let mut pos_lbl = LineBuf::<12>::new();
+        let _ = write!(pos_lbl, "{}-{}/{}", first, last, st.count);
+        draw_btn(
+            BTN_SCR_MID,
+            pos_lbl.as_str(),
+            FontKind::Small,
+            CARD_BG,
+            ACCENT_GOLD,
             BTN_STD_BORDER,
+        );
+
+        draw_btn(
+            BTN_SCR_DN,
+            "",
+            FontKind::Small,
+            BTN_STD_BG,
+            TEXT_WHITE,
+            if can_dn { ACCENT_CYAN } else { BTN_STD_BORDER },
+        );
+        draw_arrow_v(
+            BTN_SCR_DN.x + (BTN_SCR_DN.w as i32) / 2,
+            BTN_SCR_DN.y + (BTN_SCR_DN.h as i32) / 2,
+            false,
+            if can_dn { TEXT_WHITE } else { TEXT_MUTED },
         );
     } else {
         draw_btn(
@@ -763,6 +1100,10 @@ fn main() -> ! {
 
     let mut was_pressed = false;
     let mut press_pt = embedded_graphics::prelude::Point::zero();
+    let mut last_pt = embedded_graphics::prelude::Point::zero();
+    let mut drag_anchor_y = 0i32;
+    let mut list_dragged = false;
+    let mut sb_dragging = false;
     let mut cmd_buf = [0u8; 32];
     let mut cmd_len = 0usize;
 
@@ -783,12 +1124,36 @@ fn main() -> ! {
                             st.refresh(&mut board);
                             render_launcher(&st);
                             board.present_all();
+                        } else if line == "DOWN" || line == "PAGE" {
+                            if st.scroll < st.max_scroll() {
+                                st.scroll += 1;
+                                st.selected = st.scroll + VISIBLE_ROWS - 1;
+                            } else if st.selected + 1 < st.count {
+                                st.selected += 1;
+                            } else {
+                                st.scroll = 0;
+                                st.selected = 0;
+                            }
+                            render_launcher(&st);
+                            board.present_all();
+                        } else if line == "UP" {
+                            if st.scroll > 0 {
+                                st.scroll -= 1;
+                                if st.selected >= st.scroll + VISIBLE_ROWS {
+                                    st.selected = st.scroll + VISIBLE_ROWS - 1;
+                                }
+                            } else if st.selected > 0 {
+                                st.selected -= 1;
+                            }
+                            render_launcher(&st);
+                            board.present_all();
                         } else if let Some(arg) = line.strip_prefix("PLAY ") {
                             let target = arg.trim();
                             if let Some(idx) = (0..st.count)
                                 .find(|&i| st.entries[i].sd_file.file_name_str() == target)
                             {
                                 st.selected = idx;
+                                st.ensure_selected_visible();
                                 let chosen = st.entries[idx];
                                 do_launch(&mut board, &chosen, false);
                             }
@@ -798,6 +1163,7 @@ fn main() -> ! {
                                 .find(|&i| st.entries[i].sd_file.file_name_str() == target)
                             {
                                 st.selected = idx;
+                                st.ensure_selected_visible();
                                 let chosen = st.entries[idx];
                                 if chosen.supports_demo {
                                     do_launch(&mut board, &chosen, true);
@@ -815,55 +1181,204 @@ fn main() -> ! {
             }
         }
 
-        let now_pressed = board.touch.pressed();
-        if now_pressed && !was_pressed {
-            press_pt = board.touch.point();
-        } else if !now_pressed && was_pressed {
+        // Надійне зчитування тачу (`pressed -> point -> pressed`) без хибних координат на відриві пальця
+        let mut valid_pt = None;
+        if board.touch.pressed() {
+            let pt = board.touch.point();
+            if board.touch.pressed() {
+                valid_pt = Some(pt);
+            }
+        }
+        let now_pressed = valid_pt.is_some();
+
+        if let Some(pt) = valid_pt {
+            last_pt = pt;
+            if !was_pressed {
+                press_pt = pt;
+                drag_anchor_y = pt.y;
+                list_dragged = false;
+                sb_dragging = st.count > VISIBLE_ROWS
+                    && in_box(pt, SB_X - 3, SB_Y, (SB_W as i32) + 8, SB_H);
+
+                if sb_dragging {
+                    let top_cap = SB_Y + SB_CAP_H + 2;
+                    let bot_cap = SB_Y + SB_H - SB_CAP_H - 2;
+                    if pt.y > top_cap && pt.y < bot_cap {
+                        let span = (bot_cap - top_cap).max(1);
+                        let rel = (pt.y - top_cap).clamp(0, span);
+                        let target = ((rel as usize) * st.max_scroll() + (span as usize) / 2)
+                            / (span as usize);
+                        if target != st.scroll {
+                            st.scroll = target;
+                            if st.selected < st.scroll {
+                                st.selected = st.scroll;
+                            } else if st.selected >= st.scroll + VISIBLE_ROWS {
+                                st.selected = st.scroll + VISIBLE_ROWS - 1;
+                            }
+                            render_launcher(&st);
+                            board.present_all();
+                        }
+                    }
+                }
+            } else if sb_dragging {
+                // Живе перетягування повзунка смуги прокрутки
+                let top_cap = SB_Y + SB_CAP_H + 2;
+                let bot_cap = SB_Y + SB_H - SB_CAP_H - 2;
+                if pt.y >= top_cap - 6 && pt.y <= bot_cap + 6 {
+                    let span = (bot_cap - top_cap).max(1);
+                    let rel = (pt.y - top_cap).clamp(0, span);
+                    let target =
+                        ((rel as usize) * st.max_scroll() + (span as usize) / 2) / (span as usize);
+                    if target != st.scroll {
+                        st.scroll = target;
+                        if st.selected < st.scroll {
+                            st.selected = st.scroll;
+                        } else if st.selected >= st.scroll + VISIBLE_ROWS {
+                            st.selected = st.scroll + VISIBLE_ROWS - 1;
+                        }
+                        render_launcher(&st);
+                        board.present_all();
+                    }
+                }
+            } else if st.count > VISIBLE_ROWS
+                && in_box(press_pt, LIST_X, LIST_Y, LIST_W_SCROLL as i32, LIST_H)
+            {
+                // Жива прокрутка списку свайпом/перетягуванням пальця вгору або вниз
+                let dy = pt.y - drag_anchor_y;
+                if dy <= -26 {
+                    drag_anchor_y = pt.y;
+                    list_dragged = true;
+                    if st.scroll_by(1) {
+                        if st.selected < st.scroll {
+                            st.selected = st.scroll;
+                        }
+                        render_launcher(&st);
+                        board.present_all();
+                    }
+                } else if dy >= 26 {
+                    drag_anchor_y = pt.y;
+                    list_dragged = true;
+                    if st.scroll_by(-1) {
+                        if st.selected >= st.scroll + VISIBLE_ROWS {
+                            st.selected = st.scroll + VISIBLE_ROWS - 1;
+                        }
+                        render_launcher(&st);
+                        board.present_all();
+                    }
+                }
+            }
+        } else if was_pressed {
             let p = press_pt;
+            let total_dy = last_pt.y - press_pt.y;
+            let is_tap = !list_dragged
+                && (last_pt.x - press_pt.x).abs() < 18
+                && total_dy.abs() < 16;
             let mut dirty = false;
 
-            if HDR_SD_BOX.contains(p) {
-                st.refresh(&mut board);
-                dirty = true;
-            } else if BTN_PLAY.contains(p) && st.count > 0 {
-                let chosen = st.entries[st.selected];
-                do_launch(&mut board, &chosen, false);
-                st.refresh(&mut board);
-                dirty = true;
-            } else if BTN_DEMO.contains(p) && st.count > 0 {
-                let chosen = st.entries[st.selected];
-                if chosen.supports_demo {
-                    do_launch(&mut board, &chosen, true);
-                    st.refresh(&mut board);
-                    dirty = true;
+            if sb_dragging {
+                // Тап по верхній або нижній стрілці смуги прокрутки
+                if is_tap {
+                    if p.y <= SB_Y + SB_CAP_H + 2 {
+                        if st.scroll > 0 {
+                            st.scroll -= 1;
+                            if st.selected >= st.scroll + VISIBLE_ROWS {
+                                st.selected = st.scroll + VISIBLE_ROWS - 1;
+                            }
+                            dirty = true;
+                        }
+                    } else if p.y >= SB_Y + SB_H - SB_CAP_H - 2 && st.scroll < st.max_scroll() {
+                        st.scroll += 1;
+                        st.selected = st.scroll + VISIBLE_ROWS - 1;
+                        dirty = true;
+                    }
                 }
-            } else if BTN_SD_ACT.contains(p) {
-                if st.sd_status.is_ok() && st.count == 0 && st.has_flash_pack {
-                    try_run_sdpack_install(&mut board, &mut st);
-                } else if st.count > PAGE_SIZE {
-                    let pages = st.count.div_ceil(PAGE_SIZE);
-                    st.page = (st.page + 1) % pages;
-                    st.selected = st.page * PAGE_SIZE;
-                } else {
-                    st.refresh(&mut board);
-                }
-                dirty = true;
-            } else if st.count > 0
-                && in_box(p, LIST_X, LIST_Y, LIST_W as i32, 5 * (ROW_H + ROW_GAP))
+            } else if st.count > VISIBLE_ROWS
+                && !list_dragged
+                && in_box(p, LIST_X, LIST_Y, LIST_W_SCROLL as i32, LIST_H)
+                && total_dy.abs() >= 16
             {
-                let rel_y = p.y - LIST_Y;
-                let slot = (rel_y / (ROW_H + ROW_GAP)) as usize;
-                let idx = st.page * PAGE_SIZE + slot;
-                if slot < PAGE_SIZE && idx < st.count {
-                    if st.selected == idx {
-                        // Повторний тап по вже вибраній грі одразу запускає її!
-                        let chosen = st.entries[idx];
-                        do_launch(&mut board, &chosen, false);
-                        st.refresh(&mut board);
-                    } else {
-                        st.selected = idx;
+                // Короткий швидкий свайп (flick) по списку ігор
+                if total_dy < 0 && st.scroll_by(1) {
+                    if st.selected < st.scroll {
+                        st.selected = st.scroll;
                     }
                     dirty = true;
+                } else if total_dy > 0 && st.scroll_by(-1) {
+                    if st.selected >= st.scroll + VISIBLE_ROWS {
+                        st.selected = st.scroll + VISIBLE_ROWS - 1;
+                    }
+                    dirty = true;
+                }
+            } else if is_tap {
+                let row_w = if st.count > VISIBLE_ROWS {
+                    LIST_W_SCROLL as i32
+                } else {
+                    LIST_W_FULL as i32
+                };
+
+                if HDR_SD_BOX.contains(p) {
+                    st.refresh(&mut board);
+                    dirty = true;
+                } else if BTN_PLAY.contains(p) && st.count > 0 {
+                    let chosen = st.entries[st.selected];
+                    do_launch(&mut board, &chosen, false);
+                    st.refresh(&mut board);
+                    dirty = true;
+                } else if BTN_DEMO.contains(p) && st.count > 0 {
+                    let chosen = st.entries[st.selected];
+                    if chosen.supports_demo {
+                        do_launch(&mut board, &chosen, true);
+                        st.refresh(&mut board);
+                        dirty = true;
+                    }
+                } else if st.sd_status.is_ok()
+                    && st.count == 0
+                    && st.has_flash_pack
+                    && BTN_SD_ACT.contains(p)
+                {
+                    try_run_sdpack_install(&mut board, &mut st);
+                    dirty = true;
+                } else if st.count > VISIBLE_ROWS && BTN_SCR_UP.contains(p) {
+                    if st.scroll > 0 {
+                        st.scroll -= 1;
+                        if st.selected >= st.scroll + VISIBLE_ROWS {
+                            st.selected = st.scroll + VISIBLE_ROWS - 1;
+                        }
+                        dirty = true;
+                    } else if st.selected > 0 {
+                        st.selected -= 1;
+                        dirty = true;
+                    }
+                } else if st.count > VISIBLE_ROWS && BTN_SCR_DN.contains(p) {
+                    if st.scroll < st.max_scroll() {
+                        st.scroll += 1;
+                        st.selected = st.scroll + VISIBLE_ROWS - 1;
+                        dirty = true;
+                    } else if st.selected + 1 < st.count {
+                        st.selected += 1;
+                        dirty = true;
+                    }
+                } else if st.count > VISIBLE_ROWS && BTN_SCR_MID.contains(p) {
+                    st.refresh(&mut board);
+                    dirty = true;
+                } else if st.count <= VISIBLE_ROWS && BTN_SD_ACT.contains(p) {
+                    st.refresh(&mut board);
+                    dirty = true;
+                } else if st.count > 0 && in_box(p, LIST_X, LIST_Y, row_w, LIST_H) {
+                    let rel_y = p.y - LIST_Y;
+                    let slot = (rel_y / (ROW_H + ROW_GAP)) as usize;
+                    let idx = st.scroll + slot;
+                    if slot < VISIBLE_ROWS && idx < st.count {
+                        if st.selected == idx {
+                            // Повторний тап по вже вибраній грі одразу запускає її!
+                            let chosen = st.entries[idx];
+                            do_launch(&mut board, &chosen, false);
+                            st.refresh(&mut board);
+                        } else {
+                            st.selected = idx;
+                        }
+                        dirty = true;
+                    }
                 }
             }
 
@@ -871,8 +1386,10 @@ fn main() -> ! {
                 render_launcher(&st);
                 board.present_all();
             }
+            list_dragged = false;
+            sb_dragging = false;
         }
         was_pressed = now_pressed;
-        board.delay.delay_millis(16);
+        board.delay.delay_millis(14);
     }
 }
