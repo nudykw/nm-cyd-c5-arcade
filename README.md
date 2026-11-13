@@ -244,8 +244,12 @@ python3 tools/screenshot.py /tmp/screen.png /dev/ttyUSB0
 
 ---
 
-## 10. Ліцензія
+## 10. Ліцензія й історія змін
 
-Файл `LICENSE` у репозиторії поки не доданий — визначте ліцензію перед публікацією
-(MIT / Apache-2.0 / GPL-3.0 тощо). Рівні гри «3D Sokoban» — класичний набір XSokoban
-(Thinking Rabbit, 1982), поширюється як дані рівнів.
+Код — **MIT**, див. [`LICENSE`](LICENSE). Історія версій — [`CHANGELOG.md`](CHANGELOG.md).
+
+Рівні гри «3D Sokoban» — класичний набір **XSokoban** (Thinking Rabbit, 1982), поширюється як дані
+рівнів у форматі XSB.
+
+CI (`.github/workflows/ci.yml`) на кожен push/PR проганяє хост-тести всіх 11 рушіїв і збирає прошивку
+під `riscv32imac-unknown-none-elf`.

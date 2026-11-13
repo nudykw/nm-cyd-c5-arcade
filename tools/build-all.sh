@@ -4,29 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "=== [1/4] Host unit tests (game engines + CRC32) ==="
-TMP_TEST_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_TEST_DIR"' EXIT
-
-for pair in \
-  "ttt:games/ttt/src/game.rs" \
-  "g2048:games/g2048/src/game.rs" \
-  "jewels:games/jewels/src/game.rs" \
-  "zuma:games/zuma/src/game.rs" \
-  "birds:games/birds/src/game.rs" \
-  "chess:games/chess/src/game.rs" \
-  "checkers:games/checkers/src/game.rs" \
-  "sudoku:games/sudoku/src/game.rs" \
-  "gomoku:games/gomoku/src/game.rs" \
-  "cybermaze:games/cybermaze/src/game.rs" \
-  "sokoban3d:games/sokoban3d/src/game.rs"
-do
-  name="${pair%%:*}"
-  src="${pair#*:}"
-  echo "  -> testing $name ($src)"
-  rustc --edition 2024 --test "$src" -O -o "$TMP_TEST_DIR/test_$name"
-  "$TMP_TEST_DIR/test_$name" --quiet
-done
+echo "=== [1/4] Host unit tests (game engines) ==="
+bash "$ROOT/tools/test-host.sh"
 
 echo "=== [2/4] Building workspace (--release, target riscv32imac-unknown-none-elf) ==="
 cargo build --release --workspace

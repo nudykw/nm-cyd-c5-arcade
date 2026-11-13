@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  host-tests:
+    name: Host tests (game engines)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run host unit tests of every game engine
+        run: bash tools/test-host.sh
+
+      - name: Check helper scripts
+        run: |
+          bash -n tools/build-all.sh
+          bash -n tools/flash-all.sh
+          bash -n tools/test-host.sh
+          python3 -m py_compile tools/pack-sd.py tools/screenshot.py
+
+  firmware:
+    name: Firmware build (esp32c5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with the ESP32-C5 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imac-unknown-none-elf
+          components: rust-src
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace (launcher + 11 games)
+        run: cargo build --release --workspace
+
+      - name: Report firmware sizes
+        run: |
+          ls -l target/riscv32imac-unknown-none-elf/release/cyd-launcher
+          ls -l target/riscv32imac-unknown-none-elf/release/cyd-game-*
+
+      - name: Upload launcher binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyd-launcher-elf
+          path: target/riscv32imac-unknown-none-elf/release/cyd-launcher
+          if-no-files-found: error

@@ -55,6 +55,8 @@ python3 --version
 
 ## 2. Збірка, тести, прошивка
 
+Хост-тести рушіїв окремо (так само робить CI): `bash tools/test-host.sh`.
+
 ```bash
 cd nm-cyd-c5-arcade
 
