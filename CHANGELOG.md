@@ -22,6 +22,9 @@
 - `.github/workflows/ci.yml` — хост-тести всіх рушіїв + збірка прошивки на кожен push/PR.
 - `tools/test-host.sh` — окремий прогін хост-тестів (використовується в `build-all.sh` і CI).
 - Ліцензія **MIT**.
+- `tools/make-gif.py` — GIF-енкодер на stdlib (медіан-розсічення палітри + LZW), ним складено
+  `docs/demo.gif` із живих кадрів плати.
+- `docs/board.png` — фото плати; README починається з демо-GIF і фото заліза.
 
 ### Змінено
 - `crates/cyd-c5-common`: `boot::last_launched_name()` — лаунчер пам'ятає останню гру.

@@ -147,7 +147,8 @@ games/sokoban3d/src/game.rs 50 рівнів XSokoban у константі LEVEL
 partitions.csv              16 MB: nvs 0x9000 · otadata 0xE000 · factory 0x10000 (1 MB) ·
                             ota_0 0x110000 · ota_1 0x210000 (по 1 MB) · sdseed 0x310000 (2 MB)
 dist/                       генерується build-all.sh (у .gitignore)
-tools/                      build-all.sh, flash-all.sh, pack-sd.py, screenshot.py
+tools/                      build-all.sh, flash-all.sh, test-host.sh, pack-sd.py,
+                            screenshot.py (знімок екрана), make-gif.py (GIF зі stdlib)
 ```
 
 ---

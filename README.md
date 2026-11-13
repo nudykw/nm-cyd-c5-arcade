@@ -13,7 +13,23 @@
 
 ---
 
+## Демо
+
+![Демо прошивки на платі](docs/demo.gif)
+
+Кадри зняті з живого екрана плати (`python3 tools/screenshot.py`), у режимі `DEMO`:
+**CYBER MAZE** (3D-рейкаст: дрон у прицілі, далі вбитий дрон і `SCR 120`) →
+**Checkers** (ШІ проти ШІ) → **Chess** (автогра, `MV: f5c8`) → **Sudoku** (підказки `HINT`) →
+**3D Sokoban** (діорама з обертанням камери).
+GIF складено власним енкодером на stdlib: `python3 tools/make-gif.py out.gif frame*.png`.
+
+---
+
 ## 1. Залізо
+
+![Плата NM-CYD-C5](docs/board.png)
+
+*Фото плати — з картки товару продавця (Amazon); права на нього належать продавцю, на код це не поширюється.*
 
 | | |
 |---|---|
@@ -222,8 +238,12 @@ python3 tools/screenshot.py /tmp/screen.png /dev/ttyUSB0
 │   ├── build-all.sh           # хост-тести → збірка → .BIN → sdseed.bin
 │   ├── flash-all.sh           # build-all + прошивка лаунчера й пакета ігор
 │   ├── pack-sd.py             # пакування dist/sd/GAMES/*.BIN у sdseed.bin (CRC32)
-│   └── screenshot.py          # знімок екрана по UART → PNG
+│   ├── screenshot.py          # знімок екрана по UART → PNG
+│   ├── make-gif.py            # складання PNG-кадрів у анімований GIF (лише stdlib)
+│   └── test-host.sh           # хост-тести всіх рушіїв (викликає build-all.sh і CI)
 ├── docs/HARDWARE.md           # розпіновка, шина, розмітка флеша, пастки
+├── docs/board.png             # фото плати (з картки товару продавця)
+├── docs/demo.gif              # демо з живого екрана (див. розділ «Демо»)
 ├── dist/                      # генерується (у .gitignore)
 └── AGENTS.md                  # інструкції для агентів (середовище, збірка, прошивка, інваріанти)
 ```
