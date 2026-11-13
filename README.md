@@ -1,142 +1,251 @@
-# NM-CYD-C5 Arcade — GameLauncher + 5 ігор на Rust + microSD + спільна бібліотека
+# NM-CYD-C5 Arcade — GameLauncher + 11 ігор на Rust (ESP32-C5)
 
-Єдиний Cargo-workspace для плати **NM-CYD-C5** (`ESP32-C5HR8`, 16 MB Flash, 8 MB PSRAM, 2.8" TFT
-320×240 **ST7789**, резистивний тач **XPT2046**, слот **microSD** на спільній шині SPI2).
+Аркадна консоль для плати **NM-CYD-C5** (`ESP32-C5`, RISC-V 240 MHz, 16 MB флеш, 8 MB PSRAM,
+2.8" TFT 320×240 ST7789, резистивний тач XPT2046, microSD): **GameLauncher** у `factory` + **11 ігор**,
+які лежать на microSD і завантажуються в OTA-слот на вимогу.
 
-Усі 5 раніше створених для цієї плати ігор перенесені сюди, переведені на спільну бібліотеку
-`cyd-c5-common`, забезпечені кнопкою **`EXIT`** (повернення в лаунчер), кнопкою **`DEMO`**
-(для всіх ігор, що підтримують демо-режим) і збереженням рекордів на microSD.
+Усі ігри мають кнопку **`EXIT`** (повернення в лаунчер) і зберігають рекорди на microSD; більшість має
+режим **`DEMO`** (автогра). Спільний код плати — бібліотека [`crates/cyd-c5-common`](crates/cyd-c5-common).
 
----
-
-## Структура проєкту
-
-```text
-nm-cyd-c5-arcade/
-├── Cargo.toml                 # Cargo workspace (спільний target/ і залежності)
-├── partitions.csv             # Розмітка 16 MB флеша: factory (launcher), ota_0, ota_1, otadata, sdseed
-├── crates/
-│   └── cyd-c5-common/         # Спільна бібліотека плати (SPI2+DMA, ST7789, XPT2046, SD, FB, UI, OTA)
-├── launcher/                  # GameLauncher (прошивається у розділ `factory` за 0x10000)
-├── games/
-│   ├── ttt/                   # Tic-Tac-Toe (3×3 + мінімакс-ШІ)           → SD:/GAMES/TTT.BIN
-│   ├── g2048/                 # 2048 (свайпи, стрілки, анімація, бот)    → SD:/GAMES/G2048.BIN
-│   ├── jewels/                # Jewels (match-3 8×8, каскади, бот)       → SD:/GAMES/JEWELS.BIN
-│   ├── zuma/                  # Zuma (3 храмові траси, комбо, бонуси)    → SD:/GAMES/ZUMA.BIN
-│   └── birds/                 # Angry Birds (рогатка, фізика блоків, бот)→ SD:/GAMES/BIRDS.BIN
-├── dist/
-│   ├── cyd-launcher.bin       # Образ лаунчера
-│   ├── sdseed.bin             # Пакет SDPK для автоматичної розпаковки ігор на microSD по USB
-│   └── sd/GAMES/*.BIN         # Готове дерево файлів для прямого копіювання на microSD з ПК
-└── tools/
-    ├── build-all.sh           # Прогін хост-тестів + збірка всіх крейтів + експорт .BIN + sdseed.bin
-    ├── pack-sd.py             # Пакувальник dist/sd/GAMES/*.BIN у dist/sdseed.bin з CRC32
-    └── flash-all.sh           # Повна прошивка лаунчера й інсталяція всіх ігор на microSD плати
+```
+Лаунчер → вибір гри на microSD → запис .BIN у ota_0 → soft-reset → гра → EXIT → знову лаунчер
 ```
 
 ---
 
-## Як це працює (архітектура SD → OTA → Exit)
+## 1. Залізо
 
-1. **Таблиця розділів (`partitions.csv`, 16 MB Flash)**:
-   - `0x009000` (`20 KB`) — `nvs`
-   - `0x00E000` (`8 KB`)  — `otadata` (вибір активного app-розділу для ESP-IDF 2nd-stage bootloader)
-   - `0x010000` (`1 MB`)  — `factory`: **`cyd-launcher`** (GameLauncher)
-   - `0x110000` (`1 MB`)  — `ota_0`: слот виконання вибраної гри
-   - `0x210000` (`1 MB`)  — `ota_1`: резервний другий OTA-слот
-   - `0x310000` (`2 MB`)  — `sdseed`: транспортний/резервний пакет `SDPK` для запису `.BIN` на microSD
+| | |
+|---|---|
+| плата | **NM-CYD-C5** (RockBase/NMTech), модуль ESP32-C5-WROOM-1 |
+| CPU | RISC-V **RV32IMAC**, 240 MHz, **без FPU** (тому в 3D-іграх — фіксована кома) |
+| пам'ять | 16 MB SPI-флеш, 8 MB PSRAM, ~320 KB SRAM |
+| дисплей | ST7789 320×240, SPI **40 MHz** (`SCK=IO6, MOSI=IO7, MISO=IO2, CS=IO23, DC=IO24, BL=IO25`) |
+| тач | XPT2046, `CS=IO1`, 2.5 MHz, афінне калібрування |
+| SD | microSD, `CS=IO10`, 400 kHz → 16 MHz |
+| консоль | UART0 через CH340: `TX=IO11, RX=IO12`, **115200** → `/dev/ttyUSB0` |
 
-2. **Зберігання ігор і рекордів на microSD**:
-   - Образи всіх ігор лежать на картці пам'яті у каталозі **`/GAMES/*.BIN`** (`TTT.BIN`, `G2048.BIN`,
-     `JEWELS.BIN`, `ZUMA.BIN`, `BIRDS.BIN`, формат 8.3 uppercase).
-   - Рекорди зберігаються у **`/SAVES/*.SAV`** у текстовому вигляді й автоматично підтягуються як у
-     самій грі, так і в картці гри всередині **GameLauncher**.
-   - Якщо скопіювати у `/GAMES/` будь-який новий ESP32-C5 образ `*.BIN` (зібраний `espflash save-image`),
-     лаунчер автоматично виявить його, витягне назву з `EspAppDesc` і додасть до меню.
-   - Драйвер `cyd_c5_common::sd` прозоро підтримує картки з **MBR**, **GPT** (macOS Disk Utility:
-     EFI + FAT32) та **Superfloppy** (FAT16/FAT32 без MBR).
-
-3. **Запуск гри та кешування (`ota_0`)**:
-   - Коли користувач натискає **`PLAY`** або **`DEMO`** у лаунчері (чи двічі тапає по рядку гри),
-     лаунчер перевіряє штамп `LaunchStamp` в останньому секторі `ota_0` (`0x20F000`).
-   - Якщо ця ж гра вже завантажена в `ota_0` (кеш-хіт за ім'ям, розміром і CRC заголовка), повторне
-     стирання/запис флеша **не виконується** — перехід у гру займає ~0.6 с і не зношує флеш.
-   - Якщо обрано іншу гру, лаунчер стримить `/GAMES/<NAME>.BIN` із microSD по 4 КБ у `ota_0` із
-     прогрес-баром на екрані, активує `Ota0` в `otadata` і виконує `software_reset()`.
-   - Кожна гра отримує у своє розпорядження **100 % внутрішньої SRAM** чипа без жодних компромісів.
-
-4. **Повернення в лаунчер (`EXIT`)**:
-   - У кожній із 5 ігор у правому нижньому куті є червона кнопка **`EXIT`**.
-   - Натискання **`EXIT`** зберігає поточний рекорд у `/SAVES/<GAME>.SAV`, очищає `otadata` на
-     `factory` (`cyd_c5_common::boot::exit_to_launcher`) і перезавантажує чип прямо в **GameLauncher**
-     (~130 мс).
+Деталі, схема шини, пастки й розмітка флеша — [`docs/HARDWARE.md`](docs/HARDWARE.md).
 
 ---
 
-## Кнопки в іграх
+## 2. Що потрібно встановити
 
-| Гра | Файл на SD | Демо-режим | Кнопки на екрані | Рекорд на SD |
-|---|---|---|---|---|
-| **Tic-Tac-Toe** | `TTT.BIN` | ні (`AI:HARD` / `AI:EASY` / `2 PLAYR`) | `NEW`, `AI:HARD/EASY/2P`, **`EXIT`** | `/SAVES/TTT.SAV` |
-| **2048** | `G2048.BIN` | так (евристичний бот «змійка») | стрілки `▲▼◀▶`, `NEW`, **`DEMO`**, **`EXIT`** | `/SAVES/G2048.SAV` |
-| **Jewels** | `JEWELS.BIN` | так (`find_valid_move`) | `NEW`, **`DEMO`**, **`EXIT`** | `/SAVES/JEWELS.SAV` |
-| **Zuma** | `ZUMA.BIN` | так (`find_demo_shot` з променем) | `SWAP`, `PAUS/PLAY`, `NEW`, **`DEMO`**, **`EXIT`** | `/SAVES/ZUMA.SAV` |
-| **Angry Birds** | `BIRDS.BIN` | так (симуляція траєкторій `find_demo_shot`) | `RTRY`, `NEW`, `PAUSE/PLAY`, **`DEMO`**, **`EXIT`** | `/SAVES/BIRDS.SAV` |
-
-Усі 4 ігри з підтримкою демо можна запустити **одразу в режимі DEMO** кнопкою `DEMO` у самому
-GameLauncher або увімкнути/вимкнути на льоту кнопкою `DEMO` під час гри.
-
----
-
-## Спільна бібліотека `crates/cyd-c5-common`
-
-Винесений спільний код плати NM-CYD-C5, який перевикористовують лаунчер і всі 5 ігор:
-
-- **`board`** — одновикликова ініціалізація `Board::init()`: 240 MHz CPU, безпечне підняття всіх
-  трьох CS (`LCD=IO23`, `TOUCH=IO1`, `SD=IO10`) у `HIGH` до старту SPI2, `ST7789` (`Deg270`),
-  підсвітка `IO25`, `Rng`, `FlashStorage`, `UART0`.
-- **`spi`** — `SharedSpiBus` + `SharedSpiDevice`: спільна шина `SPI2 + DMA_CH0` із автоматичним
-  перемиканням такту між дисплеєм (**40 MHz**), тачем (**2.5 MHz**) і microSD (**400 kHz → 16 MHz**)
-  та утриманням `MOSI=0xFF` під час читання з SD.
-- **`fb`** — статичний фреймбуфер `320×240 Rgb565` у внутрішній SRAM + реалізація `DrawTarget` і
-  діагностичний `dump_frame_hex()`.
-- **`touch`** — драйвер `XPT2046` з медіанним фільтром по 3 вимірах та афінним калібруванням.
-- **`ui`** — спільна палітра, шрифти, примітиви (`fill`, `fill_rounded`, `stroke_rect`, `blend_fill`),
-  стандартні кнопки `draw_btn`, `draw_demo_btn`, `draw_exit_btn`, форматування чисел без алокацій.
-- **`sd`** — монтування microSD (MBR / GPT / Superfloppy), робота з `/GAMES/*.BIN` і `/SAVES/*.SAV`.
-- **`boot`** — читання/запис штампа `ota_0`, потокове завантаження `.BIN` із SD у флеш, розпаковка
-  `sdseed` на SD із перевіркою CRC32 та `exit_to_launcher()`.
-
----
-
-## Збірка, тести й прошивка
-
-Повна перевірка (хост-тести всіх 5 рушіїв + збірка `--release` + генерація `dist/sd/GAMES/*.BIN`):
+Усе — для **Arch Linux ARM64** (саме на ній проєкт збирається й прошивається). Для інших дистрибутивів
+команди ті самі, змінюється лише пакетний менеджер.
 
 ```bash
-cd ~/Projects/Esp32/nm-cyd-c5-arcade
+# 1. Базові інструменти
+sudo pacman -S --needed base-devel git python3
+
+# 2. Rust + цільовий таргет (rust-toolchain.toml підтягне компоненти сам)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+rustup target add riscv32imac-unknown-none-elf      # RV32IMAC для ESP32-C5
+rustup component add rust-src                       # потрібен для build-std
+
+# 3. Прошивальник (обирайте одне)
+sudo pacman -S --needed espflash                    # з репозиторію Arch
+# або: cargo install espflash --locked              # свіжіша версія, збирається ~5–10 хв
+```
+
+Опційно, для ручної роботи з портом:
+
+```bash
+sudo pacman -S --needed tio                         # або picocom
+sudo usermod -aG uucp "$USER"                       # доступ до /dev/ttyUSB0 (потрібен релогін)
+```
+
+`python3` потрібен лише для `tools/pack-sd.py` (пакування образу SD) і `tools/screenshot.py`
+(знімок екрана) — **зовнішніх pip-пакетів не потрібно**, тільки стандартна бібліотека.
+
+**ESP-IDF не потрібен.** Репозиторій збирається і прошивається самим лише Rust-тулчейном та `espflash`.
+
+---
+
+## 3. Швидкий старт
+
+```bash
+git clone <URL> nm-cyd-c5-arcade && cd nm-cyd-c5-arcade
+cargo build --release --workspace       # перша збірка 2–4 хв
+```
+
+### Збірка з тестами й пакетом для SD
+
+```bash
 bash tools/build-all.sh
 ```
 
-Прошивка плати **разом з автоматичним записом усіх ігор на вставлену в плату microSD**:
+Що робить:
+
+1. компілює кожен `games/*/src/game.rs` **на хості** (`rustc --test`) і проганяє юніт-тести рушіїв
+   (шахи, шашки, судоку, ґомоку, 3D-лабіринт, сокобан тощо) — жодного програмування флеша на цьому кроці;
+2. `cargo build --release --workspace` (target `riscv32imac-unknown-none-elf`);
+3. експортує образи ігор у `dist/sd/GAMES/*.BIN` (`espflash save-image`) і лаунчер у `dist/cyd-launcher.bin`;
+4. пакує `dist/sdseed.bin` — образ розділу `sdseed` з усіма іграми та CRC32.
+
+### Прошивка плати (лаунчер + автоінсталяція ігор на microSD)
 
 ```bash
-cd ~/Projects/Esp32/nm-cyd-c5-arcade
 bash tools/flash-all.sh /dev/ttyUSB0
 ```
 
-Якщо ж потрібно оновити ігри напряму через кардрідер на комп'ютері — достатньо скопіювати вміст
-`dist/sd/GAMES/*.BIN` у теки `/GAMES/` на FAT16/FAT32 microSD. Також якщо вставити у плату чисту
-відформатовану microSD, у лаунчері з'явиться кнопка **`INSTALL SD`**, яка відновить усі 5 ігор із
-резервного розділу `sdseed` без комп'ютера.
+Скрипт робить `build-all.sh`, потім:
 
-### Керування та живий скріншот через UART-консоль (`115200`, `/dev/ttyUSB0`)
+```bash
+# лаунчер у factory + очищення otadata
+espflash flash --chip esp32c5 --port /dev/ttyUSB0 --flash-size 16mb \
+  --partition-table partitions.csv --target-app-partition factory \
+  --erase-parts otadata target/riscv32imac-unknown-none-elf/release/cyd-launcher
 
-- **Живий знімок екрана без перезавантаження** у будь-який момент із лаунчера або будь-якої гри:
-  ```bash
-  python3 tools/screenshot.py /tmp/screen.png /dev/ttyUSB0
-  ```
-  (надсилає символ `?` у UART0, приймає `SNAPBEGIN 320 240`…`SNAPEND` і зберігає PNG).
-- У **GameLauncher**: `PLAY <NAME.BIN>`, `DEMO <NAME.BIN>`, `RESCAN`, `CLEARSAVES`.
-- У **будь-якій грі**: клавіша `X` або `Q` — вихід у GameLauncher (еквівалент кнопки `EXIT`),
-  `D` — перемикання `DEMO` (у `TTT`: `1..9` — хід у клітинку, `A` — зміна режиму ШІ, `N` — нова гра).
+# пакет ігор у розділ sdseed (0x310000)
+espflash write-bin --chip esp32c5 --port /dev/ttyUSB0 0x310000 dist/sdseed.bin
+```
+
+Після перезавантаження лаунчер побачить у `sdseed` свіжий пакет, скопіює всі `.BIN` у `/GAMES/` на
+microSD (з прогрес-баром) і далі працюватиме звичайним чином.
+
+> **Одна гра без лаунчера** (швидка перевірка під час розробки): прошийте крейт гри в `factory` —
+> плата стартуватиме одразу з неї. Повернути лаунчер = знову `bash tools/flash-all.sh`.
+> ```bash
+> espflash flash --non-interactive --chip esp32c5 --port /dev/ttyUSB0 --flash-size 16mb \
+>   --partition-table partitions.csv --target-app-partition factory \
+>   target/riscv32imac-unknown-none-elf/release/cyd-game-chess
+> ```
+
+---
+
+## 4. Ігри
+
+| гра | файл на SD | що це | керування |
+|---|---|---|---|
+| **Tic-Tac-Toe** | `TTT.BIN` | 3×3 з мінімакс-ШІ | тап по клітинці, `NEW`, `AI:HARD/EASY/2P` |
+| **2048** | `G2048.BIN` | класична 2048 з анімацією і ботом | свайпи / стрілки, `NEW`, `DEMO` |
+| **Jewels** | `JEWELS.BIN` | match-3 8×8, каскади | свайп/тап, `NEW`, `DEMO` |
+| **Zuma** | `ZUMA.BIN` | 3 храмові траси, комбо | прицілювання пальцем, `SWAP`, `PAUS`, `DEMO` |
+| **Angry Birds** | `BIRDS.BIN` | рогатка + фізика блоків | тягнути рогатку, `RTRY`, `PAUSE`, `DEMO` |
+| **Chess** | `CHESS.BIN` | класичні шахи (FIDE), альфа-бета ШІ | тап/перетягування, `NEW`, `UNDO`, `AI:…`, `DEMO` |
+| **Checkers** | `CHECKERS.BIN` | шашки-64: обов'язковий бій, літаючі дамки | тап по шляху серії, `NEW`, `UNDO`, `DEMO` |
+| **Sudoku** | `SUDOKU.BIN` | 9×9: генератор з єдиним розв'язком, підказки | цифрова клавіатура, `ERASE`, `HINT`, складність |
+| **Gomoku** | `GOMOKU.BIN` | «п'ять у ряд» 10×10, альфа-бета ШІ | тап по полю, `NEW`, `UNDO`, `DEMO` |
+| **Cyber Maze** | `CYBERMZ.BIN` | **3D-рейкаст FPS** (лабіринт, дрони, аптечки) | стік зліва, огляд/постріл справа, `FIRE` |
+| **3D Sokoban** | `SOKOBAN.BIN` | **3D-діорама**, 50 оригінальних рівнів XSokoban | свайп або D-pad, `ROTATE`, `UNDO`, `RESET` |
+
+Кнопки `DEMO` (лаунчер і кожна гра) вмикають автогру. `EXIT` зберігає рекорд у `/SAVES/<GAME>.SAV`
+і повертає в лаунчер.
+
+### Як додати свою гру
+
+1. скопіювати `games/ttt/` → `games/<name>/`, перейменувати крейт у `Cargo.toml`;
+2. логіку тримати в `src/game.rs` **без `std`/`alloc`/`esp-hal`** — тоді вона тестується на хості;
+3. додати крейт у `[workspace] members` (кореневий `Cargo.toml`);
+4. додати пару `"<name>:games/<name>/src/game.rs"` і `"cyd-game-<name>:<NAME>.BIN"` у `tools/build-all.sh`
+   та ім'я файлу в `tools/pack-sd.py`;
+5. додати запис у `KNOWN_GAMES` лаунчера (`launcher/src/bin/main.rs`) — заголовок, жанр, порядок, іконка;
+6. `bash tools/build-all.sh && bash tools/flash-all.sh /dev/ttyUSB0`.
+
+---
+
+## 5. Архітектура: SD → OTA → EXIT
+
+1. **Розділи** (див. [`partitions.csv`](partitions.csv)): `factory` (лаунчер), `ota_0` / `ota_1` (гра),
+   `otadata`, `sdseed` (пакет ігор для автоінсталяції).
+2. **Зберігання**: образи ігор — `SD:/GAMES/*.BIN`, рекорди — `SD:/SAVES/*.SAV` (текстом).
+   Драйвер `cyd_c5_common::sd` підтримує картки з **MBR**, **GPT** і **Superfloppy** (FAT16/FAT32 без MBR).
+3. **Запуск**: лаунчер перевіряє штамп `LaunchStamp` в останньому секторі `ota_0`; якщо ця ж гра вже
+   там (кеш за ім'ям + розміром + CRC) — перехід за ~0.65 с без стирання флеша. Інакше — потік
+   `/GAMES/<NAME>.BIN` у `ota_0` по 4 KB із прогрес-баром, активація `ota_0` в `otadata`, soft-reset.
+4. **Вихід**: `EXIT` пише рекорд у `/SAVES/`, повертає `otadata` на `factory` і перезавантажує чип у
+   лаунчер (~130 мс).
+
+Хочете оновити ігри без USB — вставте microSD у кардрідер і скопіюйте `dist/sd/GAMES/*.BIN` у `/GAMES/`
+(FAT32, імена у форматі 8.3). Порожня картка + кнопка **`INSTALL SD`** у лаунчері відновить усі ігри з
+розділу `sdseed` без комп'ютера.
+
+---
+
+## 6. Консоль, знімки екрана, команди
+
+Порт: `/dev/ttyUSB0`, **115200 8N1**.
+
+```bash
+tio /dev/ttyUSB0 -b 115200          # або: picocom -b 115200 /dev/ttyUSB0
+```
+
+**Живий знімок екрана** (без перезавантаження, у будь-якому місці — лаунчер чи гра):
+
+```bash
+python3 tools/screenshot.py /tmp/screen.png /dev/ttyUSB0
+```
+
+Скрипт надсилає `?`, плата віддає кадр у вигляді `SNAPBEGIN 320 240 … SNAPEND` (hex RGB565), скрипт
+зберігає PNG. Друк кадру займає ~20–30 с на 115200 — це нормально.
+
+| де | команди UART |
+|---|---|
+| лаунчер | `PLAY <NAME.BIN>`, `DEMO <NAME.BIN>`, `RESCAN`, `CLEARSAVES`, `DOWN` / `UP` (прокрутка) |
+| будь-яка гра | `X` / `Q` — вихід, `D` — DEMO, `?` — знімок |
+| шахи / шашки / ґомоку | `N` — нова партія, `U` — undo, `A` — режим, `>` + хід (напр. `>e2e4`) |
+| судоку | `1..9`, `E` — стерти, `H` — підказка, `C` — прибрати помилки |
+| cyber maze | `W/S/A/L` — рух/поворот, `F` — постріл |
+| 3D sokoban | `2/4/6/8` — рух, `O` — поворот камери, `R` — reset, `P`/`N` — рівень |
+
+---
+
+## 7. Спільна бібліотека `crates/cyd-c5-common`
+
+| модуль | що робить |
+|---|---|
+| `board` | `Board::init()`: CPU 240 MHz, безпечні CS, ST7789 (`Deg270`), тач, SD, UART, RNG, флеш |
+| `spi` | `SharedSpiBus` + `SharedSpiDevice`: одна шина SPI2+DMA, такт перемикається 40 MHz / 2.5 MHz / 400 kHz→16 MHz |
+| `fb` | статичний фреймбуфер 320×240 RGB565 у SRAM + `DrawTarget`, `dump_frame_hex()` |
+| `touch` | XPT2046: медіана з 3 вимірів, афінне калібрування під `MADCTL 0xA0` |
+| `ui` | палітра, шрифти 1 bpp, примітиви, кнопки `draw_btn` / `draw_demo_btn` / `draw_exit_btn`, числа без алокацій |
+| `sd` | монтування картки (MBR/GPT/Superfloppy), `/GAMES/*.BIN`, `/SAVES/*.SAV` |
+| `boot` | штамп `ota_0`, потокове завантаження `.BIN` зі SD у флеш, розпакування `sdseed`, `exit_to_launcher()` |
+
+---
+
+## 8. Структура репозиторію
+
+```text
+.
+├── Cargo.toml                 # workspace + спільні залежності (esp-hal 1.2, embedded-graphics …)
+├── rust-toolchain.toml        # stable + rust-src + riscv32imac-unknown-none-elf
+├── partitions.csv             # 16 MB: factory / ota_0 / ota_1 / sdseed
+├── crates/cyd-c5-common/      # спільна бібліотека плати
+├── launcher/                  # GameLauncher (прошивається у factory, 0x10000)
+├── games/<name>/
+│   ├── src/game.rs            # чиста логіка (тестується на хості)
+│   ├── src/bin/main.rs        # залізо: тач, малювання, UART
+│   └── build.rs               # -Tlinkall.x
+├── tools/
+│   ├── build-all.sh           # хост-тести → збірка → .BIN → sdseed.bin
+│   ├── flash-all.sh           # build-all + прошивка лаунчера й пакета ігор
+│   ├── pack-sd.py             # пакування dist/sd/GAMES/*.BIN у sdseed.bin (CRC32)
+│   └── screenshot.py          # знімок екрана по UART → PNG
+├── docs/HARDWARE.md           # розпіновка, шина, розмітка флеша, пастки
+├── dist/                      # генерується (у .gitignore)
+└── AGENTS.md                  # інструкції для агентів (середовище, збірка, прошивка, інваріанти)
+```
+
+---
+
+## 9. Типові проблеми
+
+| симптом | причина / рішення |
+|---|---|
+| `Unable to acquire exclusive lock` від `espflash` | порт зайнятий (`tio`, монітор, інший `espflash`): `fuser -v /dev/ttyUSB0`, закрити |
+| `Permission denied` на `/dev/ttyUSB0` | користувач не в групі `uucp`: `sudo usermod -aG uucp $USER` + релогін |
+| Прошивка залилася, але в UART тиша, на `ttyACM0` — `alive N` | `esp-println` зібраний з `auto`: має бути `features = ["uart"]` (див. `docs/HARDWARE.md`) |
+| Дисплей білий / сміття, SD не монтується | не піднято один із CS до старту SPI2, або картка не FAT32/MBR |
+| `Tool doesn't match supported version…` при збірці C-проєктів | у шелі одночасно активні ESP-IDF і Rust-toolchain (не стосується цього репозиторію) |
+| `cargo build` не бачить `riscv32imac-unknown-none-elf` | `rustup target add riscv32imac-unknown-none-elf` |
+| Довга перша збірка (`build-std`) | нормально: перший прогрів 2–5 хв, далі інкрементально секунди |
+
+---
+
+## 10. Ліцензія
+
+Файл `LICENSE` у репозиторії поки не доданий — визначте ліцензію перед публікацією
+(MIT / Apache-2.0 / GPL-3.0 тощо). Рівні гри «3D Sokoban» — класичний набір XSokoban
+(Thinking Rabbit, 1982), поширюється як дані рівнів.
