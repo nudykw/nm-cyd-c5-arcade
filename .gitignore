@@ -8,3 +8,7 @@
 
 # ctags index created by `code-index` if run inside the repo
 /tags
+
+# python bytecode from tools/*.py
+__pycache__/
+*.pyc
