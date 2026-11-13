@@ -14,7 +14,7 @@ jobs:
     name: Host tests (game engines)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,7 +33,7 @@ jobs:
     name: Firmware build (esp32c5)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust with the ESP32-C5 target
         uses: dtolnay/rust-toolchain@stable
@@ -42,7 +42,7 @@ jobs:
           components: rust-src
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Build workspace (launcher + 11 games)
         run: cargo build --release --workspace
@@ -53,7 +53,7 @@ jobs:
           ls -l target/riscv32imac-unknown-none-elf/release/cyd-game-*
 
       - name: Upload launcher binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cyd-launcher-elf
           path: target/riscv32imac-unknown-none-elf/release/cyd-launcher
