@@ -1,4 +1,8 @@
-//! Повноекранний RGB565-фреймбуфер 320×240 у внутрішній SRAM + `DrawTarget`.
+//! Повноекранний RGB565-фреймбуфер 320×240 + `DrawTarget`.
+//!
+//! Типово жив у внутрішній SRAM (150 KB). Лаунчер може перевести його в PSRAM
+//! (`Board::init_psram_fb()`), щоб звільнити внутрішню RAM під купу/TLS-стек:
+//! тоді `fb_ref/fb_mut` працюють через вказівник, а ігри без PSRAM нічого не втрачають.
 
 use core::convert::Infallible;
 use embedded_graphics::{
@@ -12,16 +16,50 @@ pub const SCREEN_W: i32 = 320;
 pub const SCREEN_H: i32 = 240;
 pub const FB_PIXELS: usize = (SCREEN_W as usize) * (SCREEN_H as usize);
 
+/// Фреймбуфер у внутрішній SRAM (типово для ігор: швидко, 150 KB DRAM).
+#[cfg(not(feature = "psram-fb"))]
 static mut FB: [Rgb565; FB_PIXELS] = [Rgb565::BLACK; FB_PIXELS];
+
+/// З фічею `psram-fb` (лаунчер) фреймбуфер живе в PSRAM: внутрішня SRAM звільняється
+/// під купу і стек (TLS під час оновлення по Wi-Fi).
+#[cfg(feature = "psram-fb")]
+static mut FB_PTR: *mut Rgb565 = core::ptr::null_mut();
+
+/// Перемикає фреймбуфер на зовнішню пам'ять (викликає `Board::init_psram_fb`).
+///
+/// # Safety
+/// `ptr` мусить указувати на `FB_PIXELS` пікселів, вирівняних на 2 байти, і жити вічно.
+#[cfg(feature = "psram-fb")]
+pub unsafe fn set_external_fb(ptr: *mut Rgb565) {
+    unsafe { FB_PTR = ptr };
+}
 
 #[inline]
 pub fn fb_mut() -> &'static mut [Rgb565; FB_PIXELS] {
-    unsafe { &mut *core::ptr::addr_of_mut!(FB) }
+    #[cfg(feature = "psram-fb")]
+    unsafe {
+        let p = FB_PTR;
+        assert!(!p.is_null(), "PSRAM-фреймбуфер не ініціалізовано (Board::init)");
+        &mut *(p as *mut [Rgb565; FB_PIXELS])
+    }
+    #[cfg(not(feature = "psram-fb"))]
+    unsafe {
+        &mut *core::ptr::addr_of_mut!(FB)
+    }
 }
 
 #[inline]
 pub fn fb_ref() -> &'static [Rgb565; FB_PIXELS] {
-    unsafe { &*core::ptr::addr_of!(FB) }
+    #[cfg(feature = "psram-fb")]
+    unsafe {
+        let p = FB_PTR;
+        assert!(!p.is_null(), "PSRAM-фреймбуфер не ініціалізовано (Board::init)");
+        &*(p as *const [Rgb565; FB_PIXELS])
+    }
+    #[cfg(not(feature = "psram-fb"))]
+    unsafe {
+        &*core::ptr::addr_of!(FB)
+    }
 }
 
 #[inline]

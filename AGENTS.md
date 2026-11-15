@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| що це | Cargo-workspace: **GameLauncher** у `factory` + **11 ігор**, що вантажаться з `SD:/GAMES/*.BIN` в `ota_0` |
+| що це | Cargo-workspace: **GameLauncher** у `factory` (меню ігор + **Wi-Fi 2.4/5 ГГц**) + **13 ігор**, що вантажаться з `SD:/GAMES/*.BIN` в `ota_0` |
 | плата | **NM-CYD-C5** — ESP32-C5 (RV32IMAC, 240 MHz, **без FPU**), 16 MB флеш, 8 MB PSRAM, ST7789 320×240, XPT2046, microSD |
 | порт | `/dev/ttyUSB0` (CH340). `ttyACM0` (native USB) на цій платі **не працює** |
 | мова | документація й коментарі — **українська**; ідентифікатори коду — англійська. Інші мови не додавати |
@@ -104,6 +104,13 @@ printf 'PLAY CHESS.BIN\n' > /dev/ttyUSB0
 printf 'DOWN\n' > /dev/ttyUSB0
 printf 'FORMAT\n' > /dev/ttyUSB0     # переформатувати microSD у FAT32 (+ автоінсталяція ігор)
 
+# Wi-Fi у лаунчері (див. docs/WIFI.md)
+printf 'WSCAN\n' > /dev/ttyUSB0
+printf 'WJOIN MyNet|<password>\n' > /dev/ttyUSB0   # розділювач — вертикальна риска
+printf 'WSTATUS\n' > /dev/ttyUSB0                  # стан + мережі + heap
+printf 'UCHECK\n'  > /dev/ttyUSB0                  # перевірити релізи на GitHub
+printf 'UURL owner/repo asset\n' > /dev/ttyUSB0    # діагностика TLS+завантаження
+
 # усередині гри
 printf 'X' > /dev/ttyUSB0        # EXIT → лаунчер
 printf 'D' > /dev/ttyUSB0        # DEMO on/off
@@ -121,7 +128,7 @@ printf '?' > /dev/ttyUSB0        # знімок екрана
    `tools/build-all.sh` компілює кожен рушій на хості (`rustc --test`) і ганяє юніт-тести. Додав
    `esp_hal::` у `game.rs` — зламав усі хост-тести.
 2. **Залізо й малювання — тільки в `src/bin/main.rs`.** Спільні примітиви — `cyd-c5-common::ui`.
-3. **Зміна API `cyd-c5-common` перезбирає лаунчер і всі 11 ігор** (спільний `target/`) — перевіряти
+3. **Зміна API `cyd-c5-common` перезбирає лаунчер і всі 13 ігор** (спільний `target/`) — перевіряти
    `cargo build --release --workspace`, а не один крейт.
 4. **`esp-println` — тільки `uart`** (`default-features = false, features = ["esp32c5","uart","critical-section"]`).
    З `auto` прошивка вішається на першому `println!` (на платі два USB-порти).
@@ -136,6 +143,36 @@ printf '?' > /dev/ttyUSB0        # знімок екрана
 10. **SPI дисплея — 40 MHz.** Вище — поодинокі чужі пікселі на однотонних ділянках.
 11. **3D-ігри — без `f32` у гарячих циклах**: у RV32IMAC немає FPU, тому тільки Q16.16 і таблиці
     синусів (`cybermaze`, `sokoban3d`).
+12. **Wi-Fi живе лише в лаунчері** (`crates/cyd-c5-wifi`): `esp-radio` не можна додавати в
+    `cyd-c5-common` — інакше всі 13 ігор виростуть на ~500 KB і отримають 100 KB купи.
+13. **`esp_rtos::start()` — рівно один раз, у лаунчері, після `Board::init()` і до
+    `WifiController::new()`.** Ігри планувальник не стартують. `WifiController` має єдиного
+    власника — таск `worker`; UI звертається тільки через `net::request_scan/connect/disconnect`.
+14. **Купа Wi-Fi (64 KB reclaimed + 36 KB DRAM) ініціалізується до `Board::init()`**, а головний
+    цикл лаунчера мусить віддавати квант (`Timer::after(14ms).await`) — інакше таск Wi-Fi не
+    виконується і скан/підключення зависають.
+15. **`esp-radio` на C5: `BandMode::Auto` + країна `UA`** дають 2.4 + 5 ГГц; вибір мережі зі списку
+    фіксує канал (`StationConfig::with_channel`), тому та сама SSID видна окремо як `2G` і `5G`.
+16. **Пароль пишеться в `SD:/WIFI.CFG` лише після успішного підключення + DHCP** (не на спробу),
+    і **читається тільки для позначки `*`/`FORGET`**: до закритої мережі лаунчер підключається
+    виключно через екранну клавіатуру (тап по мережі → клавіатура → `OK`). Ніякого автопідключення
+    на старті й підстановки збереженого пароля — це вимога користувача.
+17. **Бюджет app-слота — 2 MB** (`partitions.csv`): лаунчер з TLS/оновленнями — ~1.1 MB.
+    Після нових залежностей перевіряти `espflash save-image`; RAM: `.bss` ~102 KB,
+    вільний `.stack` ~163 KB (фреймбуфер лаунчера — у PSRAM, див. 18).
+18. **Лаунчер збирається з фічею `psram-fb`** (`cyd-c5-common`): його фреймбуфер 150 KB живе в
+    PSRAM, а внутрішня SRAM іде під купу/стек для TLS. Тому `tools/build-all.sh` збирає лаунчер
+    окремо, а ігри — `--workspace --exclude cyd-launcher` (інакше уніфікація фіч потягла б PSRAM
+    і в ігри). `Board::init()` сам вибирає режим за фічею.
+19. **Оновлення по Wi-Fi** (`crates/cyd-c5-wifi/src/{http,update,ca}.rs`): маніфест
+    `releases/latest/download/MANIFEST.TXT` (версія + CRC32 кожного файла), завантаження в
+    staging-розділ `dl`, перевірка (CRC32 + ESP-заголовок + `project_name`), потім гра →
+    `SD:/GAMES`, лаунчер → **інший** OTA-слот (`ota_1`/`ota_2`) + `otadata` + reset.
+    `factory` по Wi-Fi не перезаписується ніколи; `EXIT` з гри повертає в слот, записаний у штампі.
+20. **TLS-корені піновані** в `ca.rs` (USERTrust ECC для github.com, ISRG Root X1 для CDN).
+    Якщо GitHub змінить CA — рукостискання впаде з `TLS FAILED (CERT?)`, треба перегенерувати
+    `ca.rs` з `/etc/ssl/certs/*.pem` (`openssl x509 -outform DER`). SNTP необов'язковий:
+    без нього перевіряються ланцюжок/хост, але не строки дії сертифікатів.
 
 ---
 
@@ -145,12 +182,20 @@ printf '?' > /dev/ttyUSB0        # знімок екрана
 crates/cyd-c5-common/src/   board (Board::init), spi (SharedSpiBus/Device), fb (320×240 Rgb565),
                             touch (XPT2046+калібрування), ui (палітра, 1bpp шрифти, кнопки),
                             sd (MBR/GPT/Superfloppy, /GAMES, /SAVES, format_fat32 для відновлення картки), boot (OTA, sdseed, exit)
-launcher/src/bin/main.rs    GameLauncher: меню, рекорди, PLAY/DEMO, прокрутка списку, INSTALL SD
+launcher/src/bin/main.rs    GameLauncher: меню, рекорди, PLAY/DEMO, прокрутка списку, INSTALL SD,
+                            чип WI-FI у шапці, екран Wi-Fi і UART-команди WIFI/WSCAN/WJOIN/…
+crates/cyd-c5-wifi/src/     Wi-Fi-стек лаунчера: net (esp-radio + esp-rtos + embassy-net + DHCP,
+                            стан під critical_section) і ui (екран мереж + екранна клавіатура)
 games/<name>/src/game.rs    правила гри — no_std, без залежностей (+ #[test] усередині)
 games/<name>/src/bin/main.rs малювання/ввід на esp-hal, кнопки EXIT/DEMO, UART
 games/sokoban3d/src/game.rs 50 рівнів XSokoban у константі LEVELS (формат XSB)
-partitions.csv              16 MB: nvs 0x9000 · otadata 0xE000 · factory 0x10000 (1 MB) ·
-                            ota_0 0x110000 · ota_1 0x210000 (по 1 MB) · sdseed 0x310000 (2 MB)
+games/td/src/game.rs        tower defense: грядка 9×5, рослини/зомбі/хвилі, xorshift-RNG, автопілот
+partitions.csv              16 MB, слоти по 2 MB: nvs 0x9000 · otadata 0xE000 ·
+                            factory 0x10000 (лаунчер «золотий») · ota_0 0x210000 (гра) ·
+                            ota_1 0x410000 / ota_2 0x610000 (A/B лаунчера) ·
+                            sdseed 0x810000 · dl 0xA10000 (staging завантажень)
+crates/cyd-c5-wifi/src/     net (esp-radio + esp-rtos + DHCP), ui (екрани), http (TLS 1.3 + HTTP),
+                            update (маніфест/оновлення), ca (піновані корені TLS)
 dist/                       генерується build-all.sh (у .gitignore)
 tools/                      build-all.sh, flash-all.sh, test-host.sh, pack-sd.py,
                             screenshot.py (знімок екрана), make-gif.py (GIF зі stdlib)
@@ -184,7 +229,13 @@ tools/                      build-all.sh, flash-all.sh, test-host.sh, pack-sd.py
 - не додавати `std`/`alloc`/`Vec` у код, що йде у 1 MB слот;
 - не прошивати навмання: плата одна, на ній тримається робочий стенд (перед `flash-all.sh` —
   `fuser -v /dev/ttyUSB0`);
-- не змішувати мови в документації: тільки українська та англійська.
+- не змішувати мови в документації: тільки українська та англійська;
+- не додавати `esp-radio`/`embassy-net` у `cyd-c5-common` чи в ігри — тільки `cyd-c5-wifi`;
+- не викликати `esp_rtos::start()` в іграх і не «просувати» `WifiController` в UI-код
+  (лише `net::request_*`), див. інваріанти 12–20 і [`docs/WIFI.md`](docs/WIFI.md);
+- не міняти `partitions.csv` без синхронної правки констант у `crates/cyd-c5-common/src/boot.rs`
+  (`OTA0/OTA1/OTA2/SDSEED/DL`) і `tools/flash-all.sh` (0x810000);
+- не перезаписувати `factory` по Wi-Fi — оновлення йдуть лише в `ota_1`/`ota_2`.
 
 ---
 

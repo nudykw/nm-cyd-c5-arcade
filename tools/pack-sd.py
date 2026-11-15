@@ -30,6 +30,8 @@ def main() -> None:
         "GOMOKU.BIN",
         "CYBERMZ.BIN",
         "SOKOBAN.BIN",
+        "SWARM.BIN",
+        "GARDEN.BIN",
     ]
     found = sorted(
         f for f in os.listdir(games_dir) if f.upper().endswith(".BIN") and os.path.isfile(os.path.join(games_dir, f))

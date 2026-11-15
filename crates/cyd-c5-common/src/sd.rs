@@ -437,6 +437,55 @@ impl LineBufName {
     }
 }
 
+/// Збережені облікові дані Wi-Fi з `SD:/WIFI.CFG`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct WifiCfg {
+    ssid: [u8; 32],
+    ssid_len: u8,
+    pass: [u8; 64],
+    pass_len: u8,
+}
+
+impl WifiCfg {
+    /// Створює конфіг; `None`, якщо SSID порожній/довший за 32 байти або пароль довший за 64.
+    pub fn new(ssid: &[u8], pass: &[u8]) -> Option<Self> {
+        if ssid.is_empty() || ssid.len() > 32 || pass.len() > 64 {
+            return None;
+        }
+        let mut cfg = WifiCfg {
+            ssid: [0u8; 32],
+            ssid_len: ssid.len() as u8,
+            pass: [0u8; 64],
+            pass_len: pass.len() as u8,
+        };
+        cfg.ssid[..ssid.len()].copy_from_slice(ssid);
+        cfg.pass[..pass.len()].copy_from_slice(pass);
+        Some(cfg)
+    }
+
+    pub fn ssid(&self) -> &str {
+        core::str::from_utf8(&self.ssid[..self.ssid_len as usize]).unwrap_or("")
+    }
+
+    pub fn pass(&self) -> &str {
+        core::str::from_utf8(&self.pass[..self.pass_len as usize]).unwrap_or("")
+    }
+
+    pub fn ssid_bytes(&self) -> &[u8] {
+        &self.ssid[..self.ssid_len as usize]
+    }
+
+    pub fn pass_bytes(&self) -> &[u8] {
+        &self.pass[..self.pass_len as usize]
+    }
+}
+
+impl core::fmt::Debug for WifiCfg {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "WifiCfg {{ ssid: {:?}, pass: *** }}", self.ssid())
+    }
+}
+
 impl core::ops::Deref for LineBufName {
     type Target = str;
     fn deref(&self) -> &str {
@@ -1027,5 +1076,74 @@ impl SdSlot {
             return false;
         }
         file.flush().is_ok()
+    }
+
+    /// Читає `SD:/WIFI.CFG` (рядки `SSID=…` та `PASS=…`). `None`, якщо файлу немає або він некоректний.
+    pub fn load_wifi_cfg(&mut self) -> Option<WifiCfg> {
+        self.ensure_mounted().ok()?;
+        let vol = self.mgr.open_volume(VolumeIdx(0)).ok()?;
+        let root = vol.open_root_dir().ok()?;
+        let file = root.open_file_in_dir("WIFI.CFG", Mode::ReadOnly).ok()?;
+        let mut buf = [0u8; 160];
+        let n = file.read(&mut buf).ok()?;
+        let text = &buf[..n];
+
+        let mut ssid: &[u8] = &[];
+        let mut pass: &[u8] = &[];
+        for line in text.split(|&b| b == b'\n' || b == b'\r') {
+            if let Some(v) = line.strip_prefix(b"SSID=".as_slice()) {
+                ssid = v;
+            } else if let Some(v) = line.strip_prefix(b"PASS=".as_slice()) {
+                pass = v;
+            }
+        }
+        if ssid.is_empty() {
+            return None;
+        }
+        WifiCfg::new(ssid, pass)
+    }
+
+    /// Записує `SD:/WIFI.CFG` (перезаписує наявний). Пароль зберігається відкритим текстом.
+    pub fn save_wifi_cfg(&mut self, cfg: &WifiCfg) -> bool {
+        if self.ensure_mounted().is_err() {
+            return false;
+        }
+        let Ok(vol) = self.mgr.open_volume(VolumeIdx(0)) else {
+            return false;
+        };
+        let Ok(root) = vol.open_root_dir() else {
+            return false;
+        };
+        let Ok(file) = root.open_file_in_dir("WIFI.CFG", Mode::ReadWriteCreateOrTruncate) else {
+            return false;
+        };
+        if file.write(b"SSID=").is_err() || file.write(cfg.ssid_bytes()).is_err() {
+            return false;
+        }
+        if file.write(b"\nPASS=").is_err() || file.write(cfg.pass_bytes()).is_err() {
+            return false;
+        }
+        if file.write(b"\n").is_err() {
+            return false;
+        }
+        file.flush().is_ok()
+    }
+
+    /// Видаляє `SD:/WIFI.CFG` (забути мережу). `true`, якщо файлу більше немає.
+    pub fn delete_wifi_cfg(&mut self) -> bool {
+        let Ok(_) = self.ensure_mounted() else {
+            return false;
+        };
+        let Ok(vol) = self.mgr.open_volume(VolumeIdx(0)) else {
+            return false;
+        };
+        let Ok(root) = vol.open_root_dir() else {
+            return false;
+        };
+        match root.open_file_in_dir("WIFI.CFG", Mode::ReadOnly) {
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+        root.delete_entry_in_dir("WIFI.CFG").is_ok()
     }
 }

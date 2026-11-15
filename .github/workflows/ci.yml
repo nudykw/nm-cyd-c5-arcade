@@ -44,8 +44,11 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2.9.3
 
-      - name: Build workspace (launcher + 11 games)
-        run: cargo build --release --workspace
+      - name: Build launcher (з фічею psram-fb)
+        run: cargo build --release -p cyd-launcher
+
+      - name: Build 13 games (без cyd-c5-wifi: інакше уніфікація фіч вимагає global allocator)
+        run: cargo build --release --workspace --exclude cyd-launcher --exclude cyd-c5-wifi
 
       - name: Report firmware sizes
         run: |

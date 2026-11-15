@@ -15,6 +15,7 @@ use esp_hal::{
     uart::{Config as UartConfig, Uart},
 };
 use esp_storage::FlashStorage;
+use embedded_graphics::{pixelcolor::Rgb565, prelude::RgbColor};
 use mipidsi::{
     Builder, Display as MipiDisplay, NoResetPin,
     interface::SpiInterface,
@@ -52,6 +53,16 @@ pub fn present_rect_on(display: &mut Display, x: u16, y: u16, w: u16, h: u16) {
     let _ = display.set_pixels(x, y, x1, y1, it);
 }
 
+/// Периферія, потрібна для запуску планувальника `esp-rtos` і Wi-Fi.
+///
+/// `Board::init()` не чіпає її сам: планувальник стартує лише лаунчер (див. crate `cyd-c5-wifi`),
+/// а іграм вона не потрібна. Забирається один раз через [`Board::take_radio`].
+pub struct RadioPeripherals {
+    pub wifi: esp_hal::peripherals::WIFI<'static>,
+    pub timg0: esp_hal::peripherals::TIMG0<'static>,
+    pub intr0: esp_hal::peripherals::FROM_CPU_INTR0<'static>,
+}
+
 pub struct Board {
     pub bus: &'static SharedSpiBus,
     pub display: Display,
@@ -62,17 +73,47 @@ pub struct Board {
     pub delay: Delay,
     uart: Uart<'static, Blocking>,
     _backlight: Output<'static>,
+    radio: Option<RadioPeripherals>,
 }
 
 impl Board {
     /// Одноразова ініціалізація CPU (240 MHz), спільної шини SPI2+DMA, ST7789, XPT2046, SD-слота та Flash.
+    ///
+    /// З фічею `psram-fb` (лаунчер) фреймбуфер одразу їде в PSRAM — див. [`crate::fb`].
     pub fn init() -> Self {
+        Self::init_inner(cfg!(feature = "psram-fb"))
+    }
+
+    /// Явно попросити PSRAM-фреймбуфер (потрібна фіча `psram-fb`, інакше — як `init()`).
+    pub fn init_psram_fb() -> Self {
+        Self::init_inner(cfg!(feature = "psram-fb"))
+    }
+
+    fn init_inner(psram_fb: bool) -> Self {
         assert!(
             !BUS_TAKEN.swap(true, Ordering::SeqCst),
             "Board::init() called twice"
         );
 
         let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
+
+        #[cfg(feature = "psram-fb")]
+        if psram_fb {
+            static mut PSRAM: Option<esp_hal::psram::Psram> = None;
+            let psram = esp_hal::psram::Psram::new(p.PSRAM, Default::default());
+            let (ptr, size) = psram.raw_parts();
+            assert!(
+                size >= crate::fb::FB_PIXELS * 2,
+                "PSRAM замала для фреймбуфера: {size} B"
+            );
+            unsafe {
+                crate::fb::set_external_fb(ptr as *mut Rgb565);
+                *core::ptr::addr_of_mut!(PSRAM) = Some(psram);
+            }
+            crate::fb::fb_mut().fill(Rgb565::BLACK);
+        }
+        #[cfg(not(feature = "psram-fb"))]
+        let _ = psram_fb;
         let mut delay = Delay::new();
 
         // ВАЖЛИВО: піднімаємо ВСІ ТРИ CS (дисплей IO23, тач IO1, SD IO10) у HIGH ДО запуску SPI2,
@@ -128,7 +169,19 @@ impl Board {
             delay,
             uart,
             _backlight: backlight,
+            radio: Some(RadioPeripherals {
+                wifi: p.WIFI,
+                timg0: p.TIMG0,
+                intr0: p.FROM_CPU_INTR0,
+            }),
         }
+    }
+
+    /// Забирає периферію радіо (Wi-Fi + таймер/переривання для `esp-rtos`).
+    ///
+    /// Повертає `None`, якщо її вже забрали: старт планувальника можливий лише один раз.
+    pub fn take_radio(&mut self) -> Option<RadioPeripherals> {
+        self.radio.take()
     }
 
     /// Неблокуюче читання одного байта з консолі UART0 (`GPIO12`), якщо він надійшов.

@@ -19,7 +19,14 @@ embedded-graphics.workspace = true
 embedded-hal.workspace = true
 embedded-hal-bus.workspace = true
 embedded-sdmmc.workspace = true
-cyd-c5-common.workspace = true
+cyd-c5-common = { workspace = true, features = ["psram-fb"] }
+cyd-c5-wifi.workspace = true
+esp-rtos = { version = "0.4.0", features = ["esp32c5", "esp-radio", "esp-alloc", "embassy"] }
+embassy-executor = { version = "0.10.0", features = [] }
+embassy-time = "0.5.0"
+embassy-net = { version = "0.9.0", default-features = false }
 
 [features]
 framedump = []
+# лише для розробки/тестів: підключатися до збереженої в /WIFI.CFG мережі на старті
+wifi-autoconnect = []

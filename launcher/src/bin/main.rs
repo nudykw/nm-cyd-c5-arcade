@@ -18,7 +18,10 @@ use cyd_c5_common::{
         fill_rounded, in_box, rgb, stroke_rect, text, text_centered, u32_str,
     },
 };
+use cyd_c5_wifi::{Outcome, Phase, UpdateAction, WifiScreen, update};
 use embedded_graphics::pixelcolor::Rgb565;
+use embassy_executor::Spawner;
+use embassy_time::{Duration, Timer};
 use esp_println::println;
 
 #[panic_handler]
@@ -28,7 +31,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 esp_bootloader_esp_idf::esp_app_desc!(
-    "0.1.0",
+    env!("CARGO_PKG_VERSION"),
     "cyd-launcher",
     "00:00:00",
     "2026-11-12",
@@ -153,6 +156,24 @@ const KNOWN_GAMES: &[KnownGameMeta] = &[
         order: 10,
         icon_id: 11,
     },
+    KnownGameMeta {
+        bin_name: "SWARM.BIN",
+        save_name: "SWARM.SAV",
+        title: "SWARM",
+        genre: "RTS 2 FACTIONS",
+        supports_demo: true,
+        order: 11,
+        icon_id: 12,
+    },
+    KnownGameMeta {
+        bin_name: "GARDEN.BIN",
+        save_name: "GARDEN.SAV",
+        title: "GARDEN DEF",
+        genre: "VS ZOMBIES TD",
+        supports_demo: true,
+        order: 12,
+        icon_id: 13,
+    },
 ];
 
 fn lookup_meta(file_name: &str) -> Option<&'static KnownGameMeta> {
@@ -229,6 +250,7 @@ const BTN_SCR_UP: BtnRect = BtnRect::new(RIGHT_X, 206, 38, 26);
 const BTN_SCR_MID: BtnRect = BtnRect::new(RIGHT_X + 41, 206, 44, 26);
 const BTN_SCR_DN: BtnRect = BtnRect::new(RIGHT_X + 88, 206, 38, 26);
 const HDR_SD_BOX: BtnRect = BtnRect::new(190, 3, 124, 20);
+const HDR_WIFI_BOX: BtnRect = BtnRect::new(126, 3, 62, 20);
 
 fn draw_arrow_v(cx: i32, cy: i32, up: bool, col: Rgb565) {
     for row in 0..5i32 {
@@ -447,6 +469,45 @@ fn draw_game_icon(x: i32, y: i32, icon_id: u8) {
             fill(x + 4, y + 6, 4, 3, rgb(132, 234, 252));
             fill(x + 3, y + 8, 4, 3, rgb(64, 176, 206));
         }
+        12 => {
+            // SWARM: сітка карти, два загони юнітів, рамка виділення
+            fill_rounded(x, y, 28, 28, 4, rgb(18, 34, 22));
+            stroke_rect(x, y, 28, 28, ACCENT_GOLD);
+            for k in 0..3 {
+                fill(x + 4 + k * 7, y + 4, 1, 14, rgb(44, 86, 52));
+                fill(x + 4, y + 4 + k * 7, 22, 1, rgb(44, 86, 52));
+            }
+            // сині юніти
+            fill(x + 5, y + 6, 4, 4, rgb(72, 132, 232));
+            fill(x + 5, y + 12, 4, 4, rgb(72, 132, 232));
+            // червоні юніти
+            fill(x + 19, y + 9, 4, 4, rgb(224, 88, 72));
+            fill(x + 19, y + 15, 4, 4, rgb(224, 88, 72));
+            // рамка виділення навколо синіх
+            stroke_rect(x + 3, y + 4, 8, 14, rgb(250, 200, 64));
+        }
+        13 => {
+            // GARDEN DEF: грядка, соняшник і зомбі
+            fill_rounded(x, y, 28, 28, 4, rgb(64, 128, 56));
+            stroke_rect(x, y, 28, 28, ACCENT_GOLD);
+            // смуги рядів
+            for k in 0..3 {
+                fill(x + 2, y + 5 + k * 7, 24, 3, rgb(78, 146, 64));
+            }
+            // соняшник
+            draw_disc(x + 8, y + 12, 5, rgb(196, 148, 32));
+            draw_disc(x + 8, y + 12, 4, rgb(252, 208, 64));
+            draw_disc(x + 8, y + 12, 2, rgb(120, 78, 36));
+            fill(x + 7, y + 16, 2, 7, rgb(36, 108, 44));
+            // зомбі
+            fill(x + 19, y + 8, 5, 6, rgb(104, 128, 100));
+            fill(x + 20, y + 10, 1, 1, rgb(20, 18, 24));
+            fill(x + 22, y + 10, 1, 1, rgb(20, 18, 24));
+            fill(x + 18, y + 14, 8, 8, rgb(92, 104, 132));
+            fill(x + 17, y + 15, 4, 2, rgb(104, 128, 100));
+            // смужка HP
+            fill(x + 17, y + 6, 8, 2, rgb(232, 82, 82));
+        }
         _ => {
             // Картридж для будь-якого стороннього .BIN
             fill_rounded(x, y, 28, 28, 4, rgb(52, 62, 82));
@@ -661,6 +722,16 @@ fn render_launcher(st: &LauncherState) {
     fill(0, 0, SCREEN_W as u32, 26, PANEL_BG);
     fill(0, 26, SCREEN_W as u32, 1, rgb(64, 88, 128));
     text(8, 4, "CYD-C5 ARCADE", FontKind::Bold, ACCENT_GOLD);
+
+    // Індикатор Wi-Fi у шапці: OFF / SCAN / ... / 2G / 5G / ERR
+    let (wifi_lbl, wifi_phase) = cyd_c5_wifi::net::chip();
+    let (w_bg, w_fg, w_brd) = match wifi_phase {
+        Phase::Connected => (rgb(22, 68, 46), ACCENT_GREEN, rgb(58, 160, 96)),
+        Phase::Connecting | Phase::Scanning => (rgb(64, 52, 18), ACCENT_GOLD, ACCENT_GOLD),
+        Phase::Failed => (rgb(78, 30, 36), ACCENT_RED, rgb(176, 68, 76)),
+        _ => (rgb(36, 44, 58), TEXT_MUTED, rgb(62, 74, 94)),
+    };
+    draw_btn(HDR_WIFI_BOX, wifi_lbl, FontKind::Small, w_bg, w_fg, w_brd);
 
     // Індикатор SD-картки у шапці
     let mut sd_lbl = LineBuf::<22>::new();
@@ -1173,10 +1244,99 @@ fn do_launch(board: &mut Board, entry: &MenuEntry, start_demo: bool) {
     board.delay.delay_millis(1200);
 }
 
-#[esp_hal::main]
-fn main() -> ! {
-    let mut board = Board::init();
+#[cfg(feature = "wifi-autoconnect")]
+#[embassy_executor::task]
+async fn heartbeat() {
+    loop {
+        embassy_time::Timer::after(Duration::from_secs(5)).await;
+    }
+}
+
+/// Застосовує дію екрана Wi-Fi: `FORGET` (SD) і `UPDATE`-дії (мережа/флеш/SD, async).
+/// Повертає `true`, якщо треба перемалювати екран.
+async fn apply_wifi_outcome(
+    board: &mut Board,
+    ui: &mut WifiScreen,
+    st: &LauncherState,
+    net: Option<embassy_net::Stack<'static>>,
+    o: Outcome,
+) -> bool {
+    if o.forget {
+        if board.sd.delete_wifi_cfg() {
+            println!("LAUNCHER: /WIFI.CFG видалено");
+        }
+        ui.set_saved(None);
+    }
+    if let Some(action) = o.update {
+        match net {
+            Some(stack) => match action {
+                UpdateAction::Check => update::check(board, &mut ui.update, stack).await,
+                UpdateAction::InstallGames => {
+                    update::install_games(board, &mut ui.update, stack).await
+                }
+                UpdateAction::InstallLauncher => {
+                    update::install_launcher(board, &mut ui.update, stack).await
+                }
+                UpdateAction::Probe => update::probe(board, &mut ui.update, stack).await,
+            },
+            None => {
+                ui.update.phase = update::Phase::Failed;
+                ui.update.err = "NET STACK NOT READY";
+                ui.update.bump();
+            }
+        }
+    }
+    if o.redraw || o.update.is_some() {
+        if ui.open {
+            ui.draw();
+        } else {
+            render_launcher(st);
+        }
+        board.present_all();
+    }
+    o.redraw
+}
+
+/// Пароль записується в `SD:/WIFI.CFG` лише після успішного підключення (див. `WifiScreen::tick`).
+fn persist_wifi(board: &mut Board, ui: &mut WifiScreen) {
+    if let Some(cfg) = ui.take_saved_update()
+        && board.sd.save_wifi_cfg(&cfg)
+    {
+        println!("LAUNCHER: облікові дані Wi-Fi збережено в /WIFI.CFG");
+    }
+}
+
+#[esp_rtos::main]
+async fn main(spawner: Spawner) -> ! {
+    // Купа для радіо-блоба: мусить існувати до першої алокації Wi-Fi.
+    cyd_c5_wifi::init_heap();
+    // Фреймбуфер — у PSRAM: внутрішня SRAM потрібна купі й стеку під TLS при оновленнях.
+    let mut board = Board::init_psram_fb();
     println!("=== NM-CYD-C5 GAME LAUNCHER v0.1.0 ===");
+
+    // Wi-Fi: esp-rtos дає планувальник, потрібний радіо-блобам, і фоновий таск мережі.
+    let radio = board.take_radio().expect("radio peripherals already taken");
+    let timg0 = esp_hal::timer::timg::TimerGroup::new(radio.timg0);
+    esp_rtos::start(timg0.timer0, radio.intr0);
+    let saved_wifi = board.sd.load_wifi_cfg();
+    let net = cyd_c5_wifi::start(spawner, radio.wifi);
+    let mut wifi_ui = WifiScreen::new();
+    wifi_ui.set_saved(saved_wifi);
+
+    // Лише для тестових збірок (`--features wifi-autoconnect`): підключитися до збереженої мережі.
+    #[cfg(feature = "wifi-autoconnect")]
+    if let Some(cfg) = saved_wifi {
+        println!("LAUNCHER: [dev] автопідключення до збереженої мережі");
+        cyd_c5_wifi::net::request_connect(cfg, None);
+    }
+
+    // Діагностика (лише з фічею wifi-autoconnect): «живий» індикатор executor-а.
+    #[cfg(feature = "wifi-autoconnect")]
+    {
+        if let Ok(token) = heartbeat() {
+            spawner.spawn(token);
+        }
+    }
 
     let mut st = LauncherState::new();
     if has_sdpack_auto_flag(&mut board.flash) {
@@ -1198,10 +1358,22 @@ fn main() -> ! {
     let mut drag_anchor_y = 0i32;
     let mut list_dragged = false;
     let mut sb_dragging = false;
-    let mut cmd_buf = [0u8; 32];
+    let mut cmd_buf = [0u8; 96];
     let mut cmd_len = 0usize;
 
     loop {
+        // Стан Wi-Fi (сканування, підключення, IP) змінюється у фоновому таску:
+        // перемальовуємо або екран WI-FI, або індикатор у шапці лаунчера.
+        if wifi_ui.tick() {
+            if wifi_ui.open {
+                wifi_ui.draw();
+            } else {
+                render_launcher(&st);
+            }
+            board.present_all();
+        }
+        persist_wifi(&mut board, &mut wifi_ui);
+
         // підтвердження форматування «живе» ~5 секунд
         if st.format_armed > 0 {
             st.format_armed -= 1;
@@ -1214,7 +1386,23 @@ fn main() -> ! {
         while let Some(ch) = board.poll_uart_byte() {
             if ch == b'\n' || ch == b'\r' {
                 if cmd_len > 0 {
-                    if let Ok(line) = core::str::from_utf8(&cmd_buf[..cmd_len]) {
+                    // Сирий рядок (SSID/пароль чутливі до регістру) — спершу команди Wi-Fi.
+                    let raw = core::str::from_utf8(&cmd_buf[..cmd_len])
+                        .unwrap_or("")
+                        .trim();
+                    if let Some(o) = wifi_ui.on_uart(raw) {
+                        apply_wifi_outcome(&mut board, &mut wifi_ui, &st, net, o).await;
+                        cmd_len = 0;
+                        continue;
+                    }
+                    // Решта команд — регістронезалежні (як і раніше).
+                    let mut up = [0u8; 96];
+                    let n = raw.len().min(up.len());
+                    up[..n].copy_from_slice(&raw.as_bytes()[..n]);
+                    for b in up[..n].iter_mut() {
+                        *b = b.to_ascii_uppercase();
+                    }
+                    if let Ok(line) = core::str::from_utf8(&up[..n]) {
                         let line = line.trim();
                         if line == "FORMAT" {
                             do_format_sd(&mut board, &mut st);
@@ -1283,7 +1471,7 @@ fn main() -> ! {
                     cmd_len = 0;
                 }
             } else if cmd_len < cmd_buf.len() {
-                cmd_buf[cmd_len] = ch.to_ascii_uppercase();
+                cmd_buf[cmd_len] = ch;
                 cmd_len += 1;
             }
         }
@@ -1301,10 +1489,14 @@ fn main() -> ! {
         if let Some(pt) = valid_pt {
             last_pt = pt;
             if !was_pressed {
+                // Точку натискання фіксуємо для БУДЬ-ЯКОГО екрана: тап обробляється на
+                // відпусканні за `press_pt`, і якщо його не оновити на екрані Wi-Fi,
+                // клавіші отримували б стару координату з лаунчера (і «не реагували»).
                 press_pt = pt;
                 drag_anchor_y = pt.y;
                 list_dragged = false;
-                sb_dragging = st.count > VISIBLE_ROWS
+                sb_dragging = !wifi_ui.open
+                    && st.count > VISIBLE_ROWS
                     && in_box(pt, SB_X - 3, SB_Y, (SB_W as i32) + 8, SB_H);
 
                 if sb_dragging {
@@ -1327,6 +1519,8 @@ fn main() -> ! {
                         }
                     }
                 }
+            } else if wifi_ui.open {
+                // На екрані Wi-Fi немає ні свайпів, ні скролбара — чекаємо відпускання.
             } else if sb_dragging {
                 // Живе перетягування повзунка смуги прокрутки
                 let top_cap = SB_Y + SB_CAP_H + 2;
@@ -1382,7 +1576,13 @@ fn main() -> ! {
                 && total_dy.abs() < 16;
             let mut dirty = false;
 
-            if sb_dragging {
+            if wifi_ui.open {
+                if is_tap {
+                    println!("WIFI: tap ({}, {})", p.x, p.y);
+                    let o = wifi_ui.on_tap(p);
+                    apply_wifi_outcome(&mut board, &mut wifi_ui, &st, net, o).await;
+                }
+            } else if sb_dragging {
                 // Тап по верхній або нижній стрілці смуги прокрутки
                 if is_tap {
                     if p.y <= SB_Y + SB_CAP_H + 2 {
@@ -1426,6 +1626,10 @@ fn main() -> ! {
                 if HDR_SD_BOX.contains(p) {
                     st.refresh(&mut board);
                     dirty = true;
+                } else if HDR_WIFI_BOX.contains(p) {
+                    wifi_ui.open_screen();
+                    wifi_ui.draw();
+                    board.present_all();
                 } else if BTN_PLAY.contains(p) && st.count > 0 {
                     let chosen = st.entries[st.selected];
                     do_launch(&mut board, &chosen, false);
@@ -1505,6 +1709,7 @@ fn main() -> ! {
             sb_dragging = false;
         }
         was_pressed = now_pressed;
-        board.delay.delay_millis(14);
+        // Віддаємо квант планувальнику: тут виконуються таски esp-rtos (Wi-Fi, DHCP).
+        Timer::after(Duration::from_millis(14)).await;
     }
 }

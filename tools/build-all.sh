@@ -7,8 +7,14 @@ cd "$ROOT"
 echo "=== [1/4] Host unit tests (game engines) ==="
 bash "$ROOT/tools/test-host.sh"
 
-echo "=== [2/4] Building workspace (--release, target riscv32imac-unknown-none-elf) ==="
-cargo build --release --workspace
+echo "=== [2/4] Building (--release, target riscv32imac-unknown-none-elf) ==="
+# Лаунчер окремо: він єдиний вмикає фічу `psram-fb` у cyd-c5-common (фреймбуфер у PSRAM,
+# внутрішня SRAM — під купу/стек для TLS при оновленнях по Wi-Fi). Ігри збираються без неї,
+# інакше уніфікація фіч у `--workspace` потягла б PSRAM і в них.
+cargo build --release -p cyd-launcher
+# `cyd-c5-wifi` (esp-alloc з `global-allocator`) не можна тягнути в одну інвокацію з іграми:
+# уніфікація фіч додає їм вимогу глобального алокатора, якого в іграх немає.
+cargo build --release --workspace --exclude cyd-launcher --exclude cyd-c5-wifi
 
 echo "=== [3/4] Exporting ESP32-C5 app images to dist/sd/GAMES/*.BIN ==="
 REL_DIR="$ROOT/target/riscv32imac-unknown-none-elf/release"
@@ -27,7 +33,9 @@ for map in \
   "cyd-game-sudoku:SUDOKU.BIN" \
   "cyd-game-gomoku:GOMOKU.BIN" \
   "cyd-game-cybermaze:CYBERMZ.BIN" \
-  "cyd-game-sokoban3d:SOKOBAN.BIN"
+  "cyd-game-sokoban3d:SOKOBAN.BIN" \
+  "cyd-game-swarm:SWARM.BIN" \
+  "cyd-game-td:GARDEN.BIN"
 do
   bin="${map%%:*}"
   out="${map#*:}"
@@ -35,6 +43,9 @@ do
 done
 
 espflash save-image --chip esp32c5 --flash-size 16mb "$REL_DIR/cyd-launcher" "$ROOT/dist/cyd-launcher.bin"
+
+echo "=== MANIFEST.TXT для оновлень по Wi-Fi ==="
+python3 "$ROOT/tools/make-manifest.py"
 
 echo "=== [4/4] Packing SD seed bundle (dist/sdseed.bin) ==="
 python3 "$ROOT/tools/pack-sd.py" "$SD_GAMES" "$ROOT/dist/sdseed.bin"

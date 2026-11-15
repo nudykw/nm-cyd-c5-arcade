@@ -20,7 +20,9 @@ for pair in \
   "sudoku:games/sudoku/src/game.rs" \
   "gomoku:games/gomoku/src/game.rs" \
   "cybermaze:games/cybermaze/src/game.rs" \
-  "sokoban3d:games/sokoban3d/src/game.rs"
+  "sokoban3d:games/sokoban3d/src/game.rs" \
+  "swarm:games/swarm/src/game.rs" \
+  "td:games/td/src/game.rs"
 do
   name="${pair%%:*}"
   src="${pair#*:}"

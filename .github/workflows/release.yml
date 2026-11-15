@@ -1,0 +1,47 @@
+name: Release
+
+# Публікація релізу для оновлень по Wi-Fi: лаунчер + ігри + MANIFEST.TXT.
+# Лаунчер на платі тягне `https://github.com/<repo>/releases/latest/download/...`
+# (див. README §11 «Оновлення з GitHub»), тому всі файли мають бути ассетами релізу.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build & publish release assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust with the ESP32-C5 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imac-unknown-none-elf
+          components: rust-src
+
+      - name: Install espflash
+        run: cargo install espflash --locked
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Build launcher + games, export .BIN, make MANIFEST.TXT
+        run: bash tools/build-all.sh
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # MANIFEST.TXT обов'язковий: у ньому версія та CRC32 кожного файла
+          files: |
+            dist/cyd-launcher.bin
+            dist/MANIFEST.TXT
+            dist/sd/GAMES/*.BIN
+          fail_on_unmatched_files: true

@@ -14,3 +14,4 @@ pub mod ui;
 
 pub use board::{Board, Display, LCD_SPI_HZ};
 pub use fb::{FB_PIXELS, Fb, SCREEN_H, SCREEN_W, dump_frame_hex, fb_mut, fb_ref, get_px, put_px};
+pub use sd::WifiCfg;
