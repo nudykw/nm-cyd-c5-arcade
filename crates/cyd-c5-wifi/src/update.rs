@@ -99,6 +99,8 @@ pub struct UpdateState {
     pub slot: &'static str,
     pub repo: [u8; 40],
     pub repo_len: u8,
+    /// Другий тап по LAUNCHER, коли версія вже актуальна: перевстановити примусово.
+    pub force_launcher: bool,
     /// Діагностика `UURL`: ім'я ассета, який просто качаємо в `dl`.
     probe: [u8; 32],
     probe_len: u8,
@@ -126,6 +128,7 @@ impl UpdateState {
             slot: "factory",
             repo: [0; 40],
             repo_len: 0,
+            force_launcher: false,
             probe: [0; 32],
             probe_len: 0,
         };
@@ -164,6 +167,19 @@ impl UpdateState {
     }
 
     /// Скільки файлів ще треба оновити.
+    /// Чи є в маніфесті лаунчер і чи він уже актуальний.
+    pub fn launcher_state(&self) -> (bool, bool) {
+        let mut found = false;
+        let mut current = true;
+        for i in 0..self.count {
+            if self.entries[i].kind == Kind::Launcher {
+                found = true;
+                current &= self.have[i];
+            }
+        }
+        (found, found && current)
+    }
+
     pub fn pending(&self) -> usize {
         (0..self.count).filter(|&i| !self.have[i]).count()
     }
@@ -208,14 +224,13 @@ pub fn parse_manifest(st: &mut UpdateState, text: &[u8]) {
         if st.count >= MAX_ENTRIES {
             break;
         }
-        let kind = if line.starts_with(b"launcher ") {
-            Kind::Launcher
-        } else if line.starts_with(b"game ") {
-            Kind::Game
+        let (kind, rest) = if let Some(r) = line.strip_prefix(b"launcher ".as_slice()) {
+            (Kind::Launcher, r)
+        } else if let Some(r) = line.strip_prefix(b"game ".as_slice()) {
+            (Kind::Game, r)
         } else {
             continue;
         };
-        let rest = &line[7..];
         let mut it = rest.split(|&b| b == b' ');
         let (Some(name), Some(size), Some(crc)) = (it.next(), it.next(), it.next()) else {
             continue;
@@ -367,8 +382,9 @@ pub async fn check(
         return;
     }
 
-    // Що вже актуальне: ігри — за CRC на microSD, лаунчер — за версією.
-    let launcher_version = current_version();
+    // Що вже актуальне: ігри — за CRC на microSD, лаунчер — за CRC власного слоту
+    // (збіг версій нічого не гарантує: локальна збірка теж 0.5.0, але образ інший).
+    let slot = boot::launcher_slot(&mut board.flash);
     for i in 0..st.count {
         let e = st.entries[i];
         st.have[i] = match e.kind {
@@ -376,10 +392,12 @@ pub async fn check(
                 .sd
                 .game_matches(e.name(), e.size, e.crc, boot::scratch_buf()),
             Kind::Launcher => {
-                st.version() == launcher_version && e.name() == "cyd-launcher.bin"
+                e.name() == "cyd-launcher.bin"
+                    && boot::slot_crc(&mut board.flash, slot, e.size) == Some(e.crc)
             }
         };
     }
+    st.force_launcher = false;
     st.phase = if st.pending() == 0 {
         Phase::Done
     } else {
@@ -424,8 +442,16 @@ async fn fetch_to_stage(
                 .map_err(|_| http::HttpErr::BadResponse)?;
             st.progress = stage.size();
             // перемальовуємо смугу приблизно кожні 16 КБ
-            if st.progress % (16 * 1024) < chunk.len() as u32 {
+            if st.progress % (64 * 1024) < chunk.len() as u32 {
                 crate::ui::update_draw_progress(&mut board.display, st);
+            }
+            if st.progress % (256 * 1024) < chunk.len() as u32 {
+                esp_println::println!(
+                    "UPDATE: {} / {} B, heap {}",
+                    st.progress,
+                    st.total,
+                    esp_alloc::HEAP.free()
+                );
             }
             Ok(())
         };
@@ -446,10 +472,18 @@ async fn fetch_to_stage(
         return Err(msg);
     }
 
+    stage.flush(&mut board.flash).map_err(|_| "FLASH WRITE FAILED")?;
     if stage
         .verify(&mut board.flash, e.size, e.crc, project)
         .is_err()
     {
+        esp_println::println!(
+            "UPDATE: verify failed: got {} B crc={:08x}, want {} B crc={:08x}",
+            stage.size(),
+            stage.crc(),
+            e.size,
+            e.crc
+        );
         return Err("IMAGE CHECK FAILED");
     }
 
@@ -506,12 +540,20 @@ pub async fn install_launcher(
     st: &mut UpdateState,
     stack: embassy_net::Stack<'static>,
 ) {
+    if st.count == 0 {
+        st.fail("PRESS CHECK FIRST");
+        return;
+    }
     let Some(idx) = (0..st.count)
-        .find(|&i| st.entries[i].kind == Kind::Launcher && !st.have[i])
+        .find(|&i| st.entries[i].kind == Kind::Launcher)
     else {
-        st.fail("NO LAUNCHER UPDATE");
+        st.fail("NO LAUNCHER IN MANIFEST");
         return;
     };
+    if st.have[idx] && !st.force_launcher {
+        st.fail("LAUNCHER UP TO DATE");
+        return;
+    }
     let e = st.entries[idx];
     let project = "cyd-launcher";
     if let Err(msg) = fetch_to_stage(board, st, stack, e, project, idx).await {
@@ -579,6 +621,7 @@ pub async fn probe(
         .await
         .map(|_| ());
     }
+    let _ = stage.flush(&mut board.flash);
     match res {
         Ok(()) => {
             esp_println::println!(

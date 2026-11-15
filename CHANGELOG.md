@@ -30,7 +30,7 @@
   (без Wi-Fi і без PSRAM).
 - `tools/build-all.sh`: лаунчер збирається окремо (з `psram-fb`), ігри — `--exclude cyd-launcher`;
   додано генерацію `dist/MANIFEST.TXT`.
-- Купа радіо: 64 KB reclaimed + 36 KB DRAM (було 100 KB), `.bss` лаунчера ~102 KB.
+- Купа радіо: 64 KB reclaimed + 52 KB DRAM (116 KB), `.bss` лаунчера ~130 KB, стек ~133 KB.
 
 ## [0.4.0] — 2026-11-15
 

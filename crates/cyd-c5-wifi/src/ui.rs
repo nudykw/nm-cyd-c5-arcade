@@ -314,6 +314,13 @@ impl WifiScreen {
             };
         }
         if BTN_LAUNCHER.contains(p) {
+            // Якщо версія вже актуальна — перший тап лише «озброює» перевстановлення.
+            let (found, current) = self.update.launcher_state();
+            if found && current && !self.update.force_launcher {
+                self.update.force_launcher = true;
+                self.update.bump();
+                return Outcome::redraw();
+            }
             return Outcome {
                 redraw: true,
                 forget: false,
@@ -353,6 +360,14 @@ impl WifiScreen {
         }
         if BTN_UPDATE.contains(p) {
             self.view = View::Update;
+            if self.update.version_len == 0 {
+                // ще жодного разу не перевіряли — перевіряємо одразу
+                return Outcome {
+                    redraw: true,
+                    forget: false,
+                    update: Some(UpdateAction::Check),
+                };
+            }
             return Outcome::redraw();
         }
         if BTN_JOIN.contains(p) {
@@ -594,6 +609,13 @@ impl WifiScreen {
         if cmd.eq_ignore_ascii_case("UPD") || cmd.eq_ignore_ascii_case("UPDATE") {
             self.open = true;
             self.view = View::Update;
+            if self.update.version_len == 0 {
+                return Some(Outcome {
+                    redraw: true,
+                    forget: false,
+                    update: Some(UpdateAction::Check),
+                });
+            }
             return Some(Outcome::redraw());
         }
         if cmd.eq_ignore_ascii_case("UCHECK") {
@@ -1262,12 +1284,18 @@ pub fn draw_update_screen(st: &UpdateState) {
         if games_ready { TEXT_WHITE } else { TEXT_MUTED },
         if games_ready { CLR_OK } else { rgb(62, 74, 94) },
     );
-    let launcher_ready = st.count > 0 && (0..st.count).any(|i| {
-        !st.have[i] && st.entries[i].kind == update::Kind::Launcher
-    });
+    let (found_launcher, launcher_current) = st.launcher_state();
+    let launcher_ready = found_launcher && (!launcher_current || st.force_launcher);
+    let launcher_label = if st.force_launcher {
+        "SURE?"
+    } else if found_launcher && launcher_current {
+        "UP TO DATE"
+    } else {
+        "LAUNCHER"
+    };
     draw_btn(
         BTN_LAUNCHER,
-        "LAUNCHER",
+        launcher_label,
         FontKind::Small,
         if launcher_ready { rgb(120, 60, 20) } else { rgb(36, 44, 58) },
         if launcher_ready { TEXT_WHITE } else { TEXT_MUTED },

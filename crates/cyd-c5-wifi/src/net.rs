@@ -301,11 +301,11 @@ pub fn chip() -> (&'static str, Phase) {
     (text, st.phase)
 }
 
-/// Одноразова ініціалізація купи для радіо-блоба (64 KB reclaimed + 36 KB DRAM).
+/// Одноразова ініціалізація купи для радіо-блоба (64 KB reclaimed + 52 KB DRAM).
 /// Викликати першою в `main`, до `Board::init()`.
 pub fn init_heap() {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
-    esp_alloc::heap_allocator!(size: 36 * 1024);
+    esp_alloc::heap_allocator!(size: 52 * 1024);
 }
 
 /// Стартує фоновий таск Wi-Fi. Викликати після `esp_rtos::start(...)`.

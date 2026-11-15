@@ -381,8 +381,8 @@ pub fn launch_game_from_sd(
 }
 
 /// Скільки байтів образу треба прочитати, щоб дістати `EspAppDesc`
-/// (24 B image header + 8 B segment header + 0x20 заголовок дескриптора).
-pub const DESC_PROBE: usize = 0x60;
+/// (24 B image header + 8 B segment header + 0x20 дескриптор + поля; 0x50 + 32 = 0x70).
+pub const DESC_PROBE: usize = 0x80;
 /// `project_name` у дескрипторі: 0x20 (дескриптор) + 48 = 0x50.
 const DESC_NAME_OFF: usize = 0x50;
 const APP_MAGIC: u32 = 0xABCD_5432;
@@ -401,7 +401,10 @@ pub fn stage_project_name(flash: &mut FlashStorage<'_>, out: &mut [u8; 32]) -> O
 
 /// Пише потік байтів у staging-розділ `dl`, перевіряючи заголовок ESP-образу та рахуючи CRC32.
 pub struct Stage {
+    /// Скільки вже записано у флеш (кратно 4 КБ).
     size: u32,
+    /// Скільки накопичено в scratch-буфері (0..4096).
+    fill: usize,
     crc: u32,
     max_size: u32,
 }
@@ -418,67 +421,91 @@ impl Stage {
             .map_err(|_| LaunchErr::Flash)?;
         Ok(Self {
             size: 0,
+            fill: 0,
             crc: 0,
             max_size,
         })
     }
 
-    /// Додає шматок без перевірки ESP-заголовка (діагностика `UURL`: качаємо довільний файл).
+    /// Додає шматок (≤ 4 КБ); у флеш пише лише повні 4-КБ блоки (вирівнювання `write_nor`).
+    /// `check_image` — перевіряти, що це ESP-образ (для ігор/лаунчера).
+    fn feed_inner(
+        &mut self,
+        flash: &mut FlashStorage<'_>,
+        chunk: &[u8],
+        check_image: bool,
+    ) -> Result<(), LaunchErr> {
+        if chunk.is_empty() || chunk.len() > 4096 {
+            return Err(LaunchErr::BadImage);
+        }
+        if self.size + self.fill as u32 + chunk.len() as u32 > self.max_size {
+            return Err(LaunchErr::BadImage);
+        }
+        let first_bytes = self.size == 0 && self.fill == 0;
+        let mut src = chunk;
+        while !src.is_empty() {
+            let buf = io_bytes_mut();
+            let room = 4096 - self.fill;
+            let take = room.min(src.len());
+            if first_bytes && check_image {
+                // заголовок перевіряємо на першому шматку
+                if chunk[0] != 0xE9 {
+                    return Err(LaunchErr::BadImage);
+                }
+            }
+            buf[self.fill..self.fill + take].copy_from_slice(&src[..take]);
+            self.crc = crc32_update(self.crc, &src[..take]);
+            self.fill += take;
+            src = &src[take..];
+            if self.fill == 4096 {
+                flash
+                    .write_nor(DL_OFFSET + self.size, &buf[..4096])
+                    .map_err(|_| LaunchErr::Flash)?;
+                self.size += 4096;
+                self.fill = 0;
+            }
+        }
+        Ok(())
+    }
+
+    /// Додає шматок без перевірки ESP-заголовка (діагностика `UURL`).
     pub fn feed_raw(
         &mut self,
         flash: &mut FlashStorage<'_>,
         chunk: &[u8],
     ) -> Result<(), LaunchErr> {
-        if chunk.is_empty() || chunk.len() > 4096 {
-            return Err(LaunchErr::BadImage);
-        }
-        if self.size + chunk.len() as u32 > self.max_size {
-            return Err(LaunchErr::BadImage);
-        }
-        let buf = io_bytes_mut();
-        let aligned = (chunk.len() + 3) & !3;
-        buf[..chunk.len()].copy_from_slice(chunk);
-        for b in &mut buf[chunk.len()..aligned] {
-            *b = 0xFF;
-        }
-        flash
-            .write_nor(DL_OFFSET + self.size, &buf[..aligned])
-            .map_err(|_| LaunchErr::Flash)?;
-        self.crc = crc32_update(self.crc, chunk);
-        self.size += chunk.len() as u32;
-        Ok(())
+        self.feed_inner(flash, chunk, false)
     }
 
-    /// Додає шматок (≤ 4 КБ) до образу.
+    /// Додає шматок образу (перший шматок мусить починатися з 0xE9).
     pub fn feed(&mut self, flash: &mut FlashStorage<'_>, chunk: &[u8]) -> Result<(), LaunchErr> {
-        if chunk.is_empty() || chunk.len() > 4096 {
-            return Err(LaunchErr::BadImage);
-        }
-        if self.size + chunk.len() as u32 > self.max_size {
-            return Err(LaunchErr::BadImage);
-        }
-        if self.size == 0 && (chunk.len() < DESC_PROBE || chunk[0] != 0xE9) {
-            return Err(LaunchErr::BadImage);
+        self.feed_inner(flash, chunk, true)
+    }
+
+    /// Дописує «хвіст» (< 4 КБ) із вирівнюванням до 4 байтів.
+    pub fn flush(&mut self, flash: &mut FlashStorage<'_>) -> Result<(), LaunchErr> {
+        if self.fill == 0 {
+            return Ok(());
         }
         let buf = io_bytes_mut();
-        let aligned = (chunk.len() + 3) & !3;
-        buf[..chunk.len()].copy_from_slice(chunk);
-        for b in &mut buf[chunk.len()..aligned] {
+        let aligned = (self.fill + 3) & !3;
+        for b in &mut buf[self.fill..aligned] {
             *b = 0xFF;
         }
         flash
             .write_nor(DL_OFFSET + self.size, &buf[..aligned])
             .map_err(|_| LaunchErr::Flash)?;
-        self.crc = crc32_update(self.crc, chunk);
-        self.size += chunk.len() as u32;
+        self.size += self.fill as u32;
+        self.fill = 0;
         Ok(())
     }
 
+    /// Скільки байтів образу вже прийнято (записано + у буфері).
     pub fn size(&self) -> u32 {
-        self.size
+        self.size + self.fill as u32
     }
 
-    /// CRC32 усього, що вже записано в staging.
+    /// CRC32 усього прийнятого образу.
     pub fn crc(&self) -> u32 {
         self.crc
     }
@@ -541,6 +568,24 @@ pub fn install_launcher_from_stage(
         return Err(LaunchErr::BadImage);
     }
     activate_slot(flash, slot)
+}
+
+/// CRC32 перших `size` байтів app-слота (щоб порівняти «я вже цю версію?» з маніфестом).
+pub fn slot_crc(flash: &mut FlashStorage<'_>, slot: LauncherSlot, size: u32) -> Option<u32> {
+    if size == 0 || size > APP_SLOT_SIZE {
+        return None;
+    }
+    let base = slot.offset();
+    let buf = io_bytes_mut();
+    let mut off = 0u32;
+    let mut crc = 0u32;
+    while off < size {
+        let n = ((size - off) as usize).min(buf.len());
+        flash.read_nor(base + off, &mut buf[..n]).ok()?;
+        crc = crc32_update(crc, &buf[..n]);
+        off += n as u32;
+    }
+    Some(crc)
 }
 
 /// Перевіряє, чи є у розділі `sdseed` (`0x811000`) резервний пакет ігор `SDPK`.

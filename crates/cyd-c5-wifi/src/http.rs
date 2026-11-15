@@ -30,9 +30,12 @@ pub const TIMEOUT_DOWNLOAD: u64 = 180;
 
 // Буфери. TLS-запис може сягати 16 КБ, тому read-буфер мусить його вмістити;
 // решта — мінімум, щоб не з'їсти всю купу (див. docs/WIFI.md про RAM).
-const TCP_RX: usize = 4096;
+// Більший rx-буфер = більше TCP-вікно: на Wi-Fi з великим RTT це головний фактор швидкості.
+const TCP_RX: usize = 16 * 1024;
 const TCP_TX: usize = 2048;
-const TLS_RECORD_RX: usize = 16 * 1024;
+// Максимальний TLS-запис — 16640 Б (16 КБ даних + заголовок/тег). Менший буфер дає
+// `InsufficientSpace` на великих відповідях CDN (перевірено на 213 КБ CHANGELOG.md).
+const TLS_RECORD_RX: usize = 16640;
 const TLS_RECORD_TX: usize = 2048;
 const HEADER_MAX: usize = 4096;
 
@@ -383,8 +386,11 @@ where
     // GitHub завжди надсилає `Content-Length`, тож читаємо рівно стільки байтів.
     // Нульова довжина (302/204) — тіла немає, читати не можна (з'єднання вже «закрите»).
     if content_length > 0 {
+        let t0 = esp_hal::time::Instant::now();
         let mut buf = vec![0u8; 4096];
         let mut left = content_length as usize;
+        let mut reads = 0u32;
+        let mut got = 0u32;
         while left > 0 {
             let want = left.min(buf.len());
             let n = match with_timeout(Duration::from_secs(30), tls.read(&mut buf[..want])).await {
@@ -404,6 +410,17 @@ where
             }
             body(&buf[..n])?;
             left -= n;
+            reads += 1;
+            got += n as u32;
+            if reads % 16 == 0 {
+                esp_println::println!(
+                    "HTTP: body {} B ({} reads, {} ms, last n={})",
+                    got,
+                    reads,
+                    t0.elapsed().as_millis(),
+                    n
+                );
+            }
         }
     }
     // `close()` чекає на close_notify від сервера (GitHub його не надсилає) — просто кидаємо з'єднання.
